@@ -1,0 +1,13 @@
+{
+  "bundle": {
+    "linux": {
+      "appimage": {
+        "files": {
+          "/usr/bin/bwrap": "/usr/bin/bwrap",
+          "/usr/bin/xdg-dbus-proxy": "/usr/bin/xdg-dbus-proxy",
+          "/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/WebKitGPUProcess": "/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/WebKitGPUProcess"
+        }
+      }
+    }
+  }
+}

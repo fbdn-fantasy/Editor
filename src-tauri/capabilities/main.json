@@ -1,0 +1,6 @@
+{
+  "identifier": "editor-main",
+  "description": "Allow the bundled editor window to receive native lifecycle events.",
+  "windows": ["main"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

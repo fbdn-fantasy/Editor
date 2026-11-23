@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Editor",
+  "version": "1.0.1",
+  "identifier": "app.editor.TextEditor",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "enableGTKAppId": true,
+    "windows": [{ "label": "main", "title": "Editor", "width": 940, "height": 660, "minWidth": 460, "minHeight": 300, "visible": false, "dragDropEnabled": false }],
+    "security": {
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'",
+      "dangerousDisableAssetCspModification": ["style-src"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "Editor",
+    "category": "Utility",
+    "shortDescription": "Text and source-code editor",
+    "license": "Apache-2.0",
+    "licenseFile": "../LICENSE",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.png", "icons/icon.ico"],
+    "resources": { "../LICENSE": "LICENSE", "../THIRD-PARTY-NOTICES.txt": "THIRD-PARTY-NOTICES.txt" },
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": {
+        "installMode": "currentUser", "compression": "lzma",
+        "installerIcon": "icons/icon.ico", "uninstallerIcon": "icons/icon.ico",
+        "installerHooks": "../packaging/associations.nsh"
+      }
+    }
+  }
+}

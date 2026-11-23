@@ -1,0 +1,6 @@
+{
+  "identifier": "app.editor.TextEditor.Portable",
+  "app": {
+    "appDirectoriesOverride": "./Data"
+  }
+}
