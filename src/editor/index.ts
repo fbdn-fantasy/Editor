@@ -1,5 +1,5 @@
 import { EditorSelection, EditorState, Compartment, Prec, countColumn, type Extension } from '@codemirror/state';
-import { EditorView, keymap, lineNumbers, type ViewUpdate } from '@codemirror/view';
+import { EditorView, drawSelection, keymap, lineNumbers, type ViewUpdate } from '@codemirror/view';
 import {
   history, historyKeymap, defaultKeymap, undo, redo, selectAll, indentMore, indentLess, insertNewlineKeepIndent
 } from '@codemirror/commands';
@@ -105,6 +105,7 @@ export class EditorHost {
     };
     const state = EditorState.create({doc:text, extensions:[
       this.settings.of(this.extensions(base)), lineNumbers(), history(), search({top:true}), linePanel, characterCount, indentationGuides,
+      EditorState.allowMultipleSelections.of(true), drawSelection(),
       EditorView.contentAttributes.of({'aria-label':'Document text',spellcheck:'false',autocapitalize:'off',autocorrect:'off'}),
       Prec.high(keymap.of([{key:'Tab', run:tab, shift:indentLess}, {key:'Mod-g', run:goToLine}])),
       keymap.of([...defaultKeymap,...historyKeymap,...searchKeymap.filter(binding => binding.key !== 'Mod-g' && binding.key !== 'Mod-Alt-g')]),
@@ -232,12 +233,20 @@ export class EditorHost {
     if (command === 'paste') {
       const text = isTauri() ? await invoke<string>('read_clipboard') : await navigator.clipboard.readText();
       if (!text || !sameSelection()) return;
-      view.dispatch({...before.replaceSelection(text),userEvent:'input.paste',scrollIntoView:true});
+      const content = before.toText(text);
+      let line = 1;
+      const changes = before.selection.ranges.length > 1 && content.lines === before.selection.ranges.length
+        ? before.changeByRange(range => {
+            const part = content.line(line++);
+            return {changes:{from:range.from,to:range.to,insert:part.text},range:EditorSelection.cursor(range.from + part.length)};
+          })
+        : before.replaceSelection(content);
+      view.dispatch({...changes,userEvent:'input.paste',scrollIntoView:true});
       return;
     }
-    const range = before.selection.main;
-    if (range.empty) return;
-    const text = before.sliceDoc(range.from,range.to);
+    const ranges = before.selection.ranges.filter(range => !range.empty);
+    if (!ranges.length) return;
+    const text = ranges.map(range => before.sliceDoc(range.from,range.to)).join(before.lineBreak);
     if (isTauri()) await invoke('write_clipboard',{text});
     else await navigator.clipboard.writeText(text);
     if (command === 'cut' && sameSelection())

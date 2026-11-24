@@ -1,8 +1,8 @@
 [package]
 name = "editor"
-version = "1.0.1"
+version = "1.0.3"
 edition = "2024"
-license = "Apache-2.0"
+license = "AGPL-3.0-only"
 description = "Desktop text and source-code editor"
 
 [build-dependencies]
@@ -11,7 +11,6 @@ tauri-build = { version = "2.7", features = [] }
 [dependencies]
 tauri = { version = "2.12", features = [] }
 tauri-plugin-dialog = "2.8"
-tauri-plugin-single-instance = "2.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 encoding_rs = "0.8"
@@ -22,9 +21,14 @@ dunce = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+gdkx11 = "0.18"
+x11 = { version = "2", features = ["xlib"] }
 xattr = "1"
+zbus = "5.19"
 
 [target.'cfg(windows)'.dependencies]
+tauri-plugin-single-instance = "2.5"
+windows = { version = "0.62", features = ["Win32_System_Com", "Win32_UI_Shell"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_Storage_FileSystem", "Win32_System_Memory", "Win32_UI_WindowsAndMessaging"] }
 
 [features]

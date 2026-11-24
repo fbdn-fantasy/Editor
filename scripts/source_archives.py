@@ -1,20 +1,20 @@
-"""Create distribution source archives, each with its own build guide."""
+"""Create identical, complete high-compression source archives for each package."""
 import argparse
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-PROJECT = "Editor-1.0.1"
+PROJECT = "Editor-V1.0.3"
 PACKAGES = {
-    "RPM": ("Linux/RPM", "packaging/build-rpm.md"),
-    "DEB": ("Linux/DEB", "packaging/build-deb.md"),
-    "TAR": ("Linux/TAR", "packaging/build-tar.md"),
-    "Windows": ("Windows", "packaging/build-windows.md"),
+    "RPM": "Linux/RPM",
+    "DEB": "Linux/DEB",
+    "TAR": "Linux/TAR",
+    "Windows": "Windows",
 }
 
 def sources():
-    for name in ["LICENSE", "THIRD-PARTY-NOTICES.txt", "README.md", "package.json", "package-lock.json",
+    for name in [".gitignore", "NOTICE", "LICENSE", "THIRD-PARTY-NOTICES.txt", "README.md", "package.json", "package-lock.json",
                  "tsconfig.json", "svelte.config.js", "vite.config.ts", "index.html",
                  "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/build.rs", "src-tauri/tauri.conf.json"]:
         yield ROOT/name
@@ -30,7 +30,7 @@ def main():
     parser.add_argument("--linux-only", action="store_true", help="create the RPM, DEB and TAR sources")
     args = parser.parse_args()
     output = args.output.resolve()
-    for target, (folder, instructions) in PACKAGES.items():
+    for target, folder in PACKAGES.items():
         if args.linux_only and target == "Windows":
             continue
         dest = output / folder
@@ -41,7 +41,6 @@ def main():
             with ZipFile(path, "w", compression=ZIP_DEFLATED, compresslevel=9) as archive:
                 for file in sources():
                     archive.write(file, f"{PROJECT}/{file.relative_to(ROOT)}")
-                archive.write(ROOT/instructions, f"{PROJECT}/BUILD.md")
             with ZipFile(path) as archive:
                 if archive.testzip():
                     raise ValueError("Source archive integrity check failed")

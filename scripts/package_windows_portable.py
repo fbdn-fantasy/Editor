@@ -23,6 +23,7 @@ def main():
             for source, filename in [
                 (args.binary, "Editor.exe"),
                 (ROOT / "LICENSE", "LICENSE"),
+                (ROOT / "NOTICE", "NOTICE"),
                 (ROOT / "THIRD-PARTY-NOTICES.txt", "THIRD-PARTY-NOTICES.txt"),
                 (ROOT / "packaging/WINDOWS-PORTABLE-README.txt", "README.txt"),
             ]:

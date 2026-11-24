@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Check dock grouping for a packaged Editor in a private headless GNOME session.
 
-Run on Fedora 44 with GNOME Shell, Xwayland, dbus-daemon, gio, and the Editor
+Run on Fedora 44 with GNOME Shell, Xwayland, dbus-daemon, gio, zenity, and the Editor
 runtime dependencies installed. No installation of Editor is needed.
 
-    python3 tests/linux_dock.py /path/to/Editor-1.0.1-linux-x64.tar.gz
+    python3 tests/linux_dock.py /path/to/Editor-V1.0.3.tar.gz
 """
 import argparse
 import os
@@ -21,15 +21,17 @@ APP_ID = 'app.editor.TextEditor'
 def smoke_test(package, root):
     with tarfile.open(package) as release:
         release.extractall(root, filter='data')
-    prefix, = root.glob('Editor-*-linux-x64/usr')
+    prefix, = root.glob('Editor-*/usr')
     document = root / 'dock-regression.txt'
     document.write_text('A file opened through the packaged desktop entry.')
+    second = root / 'second-workspace.txt'
+    second.write_text('A file for the second workspace.')
     env = {
         'LANG': 'C.UTF-8', 'PATH': f'{prefix}/bin:/usr/bin',
         'XDG_SESSION_TYPE': 'wayland', 'XDG_CURRENT_DESKTOP': 'GNOME',
         'GSETTINGS_BACKEND': 'memory', 'LIBGL_ALWAYS_SOFTWARE': '1',
         'XDG_DATA_DIRS': f'{prefix}/share:/usr/share',
-        'DOCK_DOCUMENT': str(document), 'DOCK_EDITOR_BINARY': str(prefix / 'bin/editor-text'),
+        'DOCK_DOCUMENT': str(document), 'DOCK_SECOND': str(second), 'DOCK_EDITOR_BINARY': str(prefix / 'bin/editor-text'),
         'DOCK_DESKTOP': str(prefix / f'share/applications/{APP_ID}.desktop'),
         'DBUS_SYSTEM_BUS_ADDRESS': f'unix:path={root}/no-host-system-bus',
     }

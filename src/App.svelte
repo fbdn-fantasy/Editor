@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
   import MenuBar from './MenuBar.svelte'
+  import { version } from '../package.json'
   import Modal from './Modal.svelte'
   import PreferencePanel from './Preferences.svelte'
   import { EditorHost, languageNames } from './editor'
@@ -21,6 +22,7 @@
   let locked = false
   let prefs = { ...defaults }
   let warning = ''
+  let updateStatus = ''
   let overlay: 'preferences' | 'accessibility' | 'shortcuts' | 'about' | 'language' | null = null
   let pickedLanguage = ''
   let overlayFinished: (() => void) | undefined
@@ -46,7 +48,10 @@
     active = workspace.activeId
     current = workspace.current
     metrics = { ...(current?.metrics ?? emptyMetrics) }
+    const unlocking = locked && !workspace.terminating
     locked = workspace.terminating
+    // Restore keyboard input after Svelte removes inert from the editor.
+    if (unlocking) void tick().then(focus)
     if (changed) void tick().then(() => tabStrip?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }))
     const title = current ? `${current.name}${dirty(current) ? ' •' : ''} — Editor` : 'Editor'
     if (title !== lastTitle) { lastTitle = title; void native.title(title).catch(e => report(message(e))) }
@@ -117,9 +122,19 @@
       case 'previous': workspace.next(-1); break
       case 'wrap': if (selected) host.wrap(selected.id, !selected.metrics.wrapped); focus(); break
       case 'autoWrap': if (selected) host.wrap(selected.id, null); focus(); break
+      case 'update': void updateEditor(); break
       case 'preferences': case 'accessibility': case 'shortcuts': case 'about': case 'language': openOverlay(action); break
       default: focus(); void Promise.resolve(host.command(action)).catch(e => report(message(e)))
     }
+  }
+  async function updateEditor() {
+    if (updateStatus) return
+    updateStatus = 'Checking GitHub for updates…'
+    let result: string
+    try { result = await native.update(phase => { updateStatus = phase }) }
+    catch (error) { result = message(error) }
+    updateStatus = ''
+    await ask('Editor update', result, ['Close'])
   }
   function retrySave(doc: DocumentTab) {
     enqueue(async () => {
@@ -157,9 +172,15 @@
     themeQuery = matchMedia('(prefers-color-scheme: dark)')
     themeQuery.addEventListener('change', configure)
     window.addEventListener('keydown', keydown, true)
+    async function openLaunches(batches: string[][]) {
+      for (const paths of batches) {
+        if (paths.length) await workspace.open(paths)
+        else workspace.newTab()
+      }
+    }
     function pathsArrived() {
       if (!readyForPaths) { queuedPaths = true; return }
-      enqueue(async () => workspace.open(await native.takePaths()))
+      enqueue(async () => openLaunches(await native.takeLaunches()))
     }
     async function startup() {
       try {
@@ -169,9 +190,11 @@
         try { prefs = readPreferences(await native.loadSettings()) }
         catch (e) { report(`Could not read settings. ${message(e)}`) }
         configure()
-        try { await workspace.open(await native.takePaths()) }
-        catch (e) { report(message(e)) }
+        const [first = [], ...later] = await native.takeLaunches()
+        await workspace.open(first)
         await workspace.recover(await native.listRecovery())
+        if (!workspace.tabs.length) workspace.startupTab()
+        await openLaunches(later)
       } catch (e) { report(message(e)) }
       finally {
         if (alive) {
@@ -214,6 +237,7 @@
     <div class="position"><span>Ln {metrics.line.toLocaleString()}</span><span>Col {metrics.column.toLocaleString()}</span></div>
     <span class="count">{metrics.characters.toLocaleString()} {metrics.characters === 1 ? 'character' : 'characters'}</span>
     <div class="status-extra" aria-live="polite">
+      {#if updateStatus}<span>{updateStatus}</span>{/if}
       {#if current?.conflict}<button class="problem" on:click={() => { if (current) void workspace.resolve(current) }}>File changed · Review</button>
       {:else if current?.error}<button class="problem" title={current.error} on:click={() => run('save')}>Save failed · Retry</button>
       {:else if current?.recoveryError}<button class="problem" on:click={() => void ask('Recovery error', current!.recoveryError, ['Close'])}>Recovery error</button>
@@ -246,7 +270,7 @@
   </Modal>
 {:else if overlay === 'about'}
   <Modal title="About Editor" small dismiss={closeOverlay}>
-    <div class="dialog-body about"><strong>Editor</strong><span>Version 1.0.1</span><span>Apache License 2.0</span></div>
+    <div class="dialog-body about"><strong>Editor</strong><span>Version {version}</span><span>GNU Affero General Public License 3.0 (AGPL-3.0-only)</span></div>
     <footer><button type="button" class="primary" on:click={closeOverlay}>Close</button></footer>
   </Modal>
 {/if}

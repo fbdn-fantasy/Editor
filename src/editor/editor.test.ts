@@ -171,6 +171,27 @@ describe('editing integration', () => {
     expect(latest.get('a')?.characters).toBe(text.length + 1);
     expect(host.text('a').slice(0,5)).toBe('🌳row');
   });
+  it('selects every search match and preserves each selection through menu cut and paste', async () => {
+    const {host,view} = setup('cat Cat catalog');
+    await host.command('find');
+    const search = view.dom.querySelector<HTMLInputElement>('input[name=search]')!;
+    search.value = 'cat'; search.dispatchEvent(new Event('change'));
+    view.dom.querySelector<HTMLButtonElement>('button[name=select]')!.click();
+    expect(view.state.selection.ranges).toHaveLength(3);
+    let copied = '';
+    const clipboard = {writeText: async (text: string) => { copied = text }, readText: async () => copied};
+    Object.defineProperty(navigator, 'clipboard', {configurable: true, value: clipboard});
+    try {
+      await host.command('copy');
+      expect(copied).toBe('cat\nCat\ncat');
+      await host.command('cut');
+      expect(host.text('a')).toBe('  alog');
+      await host.command('paste');
+      expect(host.text('a')).toBe('cat Cat catalog');
+    } finally {
+      Reflect.deleteProperty(navigator, 'clipboard');
+    }
+  });
   it('keeps manual wrapping per document, and reload resets history', async () => {
     const {host,view} = setup('original','a.txt');
     host.wrap('a',false);

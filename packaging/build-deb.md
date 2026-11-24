@@ -2,7 +2,7 @@
 
 Install Node.js 22.12 or newer, npm, a stable Rust toolchain (tested with Rust 1.100), Python 3, GCC, binutils, pkg-config and the GTK 3, WebKitGTK 4.1 and OpenSSL development headers. On Fedora, install gcc, gcc-c++, pkgconf-pkg-config, gtk3-devel, webkit2gtk4.1-devel, openssl-devel and rpm-build. On Debian, install build-essential, pkg-config, libgtk-3-dev, libwebkit2gtk-4.1-dev and libssl-dev. Use a glibc-based x86-64 build environment.
 
-The distributed Linux executable was compiled with the Debian 12 system libraries. Building on a newer distribution may raise the required glibc version. For Fedora packaging, the packaging host also needs rpmbuild. Python 3 and binutils ar are sufficient to assemble the DEB and TAR from the compiled executable.
+The build environment determines the minimum glibc version. Use an older compatible build environment for a lower glibc requirement. For Fedora packaging, the packaging host also needs rpmbuild. Python 3 and binutils ar are sufficient to assemble the DEB and TAR from the compiled executable.
 
 Build the application from the extracted project directory.
 

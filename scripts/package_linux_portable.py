@@ -78,7 +78,7 @@ def main():
                    'register-launcher.sh': PACKAGING / 'register-portable.sh',
                    'Editor.png': ROOT / 'src-tauri/icons/256x256.png',
                    'README.txt': PACKAGING / 'LINUX-PORTABLE-README.txt',
-                   'LICENSE': ROOT / 'LICENSE', 'THIRD-PARTY-NOTICES.txt': ROOT / 'THIRD-PARTY-NOTICES.txt'}
+                   'LICENSE': ROOT / 'LICENSE', 'NOTICE': ROOT / 'NOTICE', 'THIRD-PARTY-NOTICES.txt': ROOT / 'THIRD-PARTY-NOTICES.txt'}
         with ZipFile(path, 'w', compression=ZIP_DEFLATED, compresslevel=9) as archive:
             for filename, source in members.items():
                 archive.write(source, f'{name}/{filename}')

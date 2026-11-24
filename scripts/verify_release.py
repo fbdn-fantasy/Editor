@@ -20,13 +20,13 @@ import zlib
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '1.0.1'
+VERSION = '1.0.3'
 APP = 'app.editor.TextEditor'
 ARTIFACTS = {
-    'RPM': f'Linux/RPM/Editor-{VERSION}.x86_64.rpm',
-    'DEB': f'Linux/DEB/editor_{VERSION}_amd64.deb',
-    'TAR': f'Linux/TAR/Editor-{VERSION}-linux-x64.tar.gz',
-    'Windows': f'Windows/Editor-{VERSION}-x64-setup.exe',
+    'RPM': f'Linux/RPM/editor-text-{VERSION}-1.x86_64.rpm',
+    'DEB': f'Linux/DEB/Editor-V{VERSION}.deb',
+    'TAR': f'Linux/TAR/Editor-V{VERSION}.tar.gz',
+    'Windows': f'Windows/Editor-V{VERSION}-Setup.exe',
 }
 SIZES = (16, 24, 32, 48, 64, 96, 128, 256, 512)
 SOURCE = ROOT / 'src-tauri'
@@ -74,15 +74,28 @@ def file_manifest(archive):
     return {name[len(prefix):]: entry for name, entry in files.items()}
 
 
+SENSITIVE = re.compile(rb'-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----|(?:AKIA|ASIA)[A-Z0-9]{16}\b|'
+                           rb'\bgh[pousr]_[A-Za-z0-9]{32,}|\bgithub_pat_[A-Za-z0-9_]{50,}|'
+                           rb'\bsk-(?:proj-)?[A-Za-z0-9_-]{40,}')
+
+
+
+def privacy_scan(name, content):
+    require(not SENSITIVE.search(content), f'credential-like text in {name}')
+    home = Path.home()
+    if home.parent != home:
+        for encoding in ('utf-8', 'utf-16-le'):
+            for sep in ('/', '\\'):
+                fragment = (str(home).replace('/', sep) + sep).encode(encoding)
+                require(fragment not in content, f'local user path in {name}')
+
+
 def source_archive(path, platform):
     excluded = {'node_modules', 'target', 'dist', '.git', '.cargo-cache', '.aws', '.ssh', '__pycache__',
                 '.env', '.npmrc', '.codex', 'credentials.json', 'id_rsa', 'id_ed25519'}
-    sensitive = re.compile(rb'-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----|(?:AKIA|ASIA)[A-Z0-9]{16}\b|'
-                           rb'\bgh[pousr]_[A-Za-z0-9]{32,}|\bgithub_pat_[A-Za-z0-9_]{50,}|'
-                           rb'\bsk-(?:proj-)?[A-Za-z0-9_-]{40,}')
     fixed = ['package.json','package-lock.json','tsconfig.json','vite.config.ts','svelte.config.js','index.html',
              'src-tauri/Cargo.toml','src-tauri/Cargo.lock','src-tauri/build.rs','src-tauri/tauri.conf.json',
-             'LICENSE','README.md','THIRD-PARTY-NOTICES.txt','assets/editor-original.png','src-tauri/icons/icon.ico']
+             '.gitignore','LICENSE','NOTICE','README.md','THIRD-PARTY-NOTICES.txt','assets/editor-original.png','src-tauri/icons/icon.ico']
     trees = ('src','src-tauri/src','src-tauri/capabilities','src-tauri/icons','scripts','packaging','tests')
     required = set(fixed)
     for tree in trees:
@@ -91,7 +104,7 @@ def source_archive(path, platform):
     with zipfile.ZipFile(path) as archive:
         require(archive.testzip() is None, 'source ZIP CRC check failed')
         files = file_manifest(archive)
-        require(not (required - files.keys()), f'missing source files: {sorted(required - files.keys())}')
+        require(required == files.keys(), f'source ZIP manifest mismatch: {sorted(required ^ files.keys())}')
         compressed = expected = 0
         for name, entry in files.items():
             member = PurePosixPath(name)
@@ -101,13 +114,10 @@ def source_archive(path, platform):
             content = archive.read(entry)
             if name in required:
                 require(content == (ROOT / name).read_bytes(), f'source differs from verification checkout: {name}')
+            privacy_scan(name, content)
             if member.suffix.lower() in {'.png','.ico'}:
                 continue
             require(b'\x00' not in content, f'unexpected binary content in source: {name}')
-            require(not sensitive.search(content), f'credential-like text in {name}')
-            local_root = str(Path.home()).encode()
-            if local_root != b'/':
-                require(local_root + b'/' not in content, f'local user path in {name}')
             if len(content) >= 4096:
                 require(entry.compress_type == zipfile.ZIP_DEFLATED, f'expected DEFLATE for {name}')
                 compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
@@ -116,8 +126,6 @@ def source_archive(path, platform):
         # ZIP has no portable level field. Compare the actual compressed text
         # with level-9 DEFLATE and tolerate differences between implementations.
         require(compressed and compressed <= expected * 1.03, 'text payload is not highly compressed')
-        require(archive.read(files['BUILD.md']) == (ROOT / f'packaging/build-{platform.lower()}.md').read_bytes(),
-                f'build instructions mismatch for {platform}')
         config = json.loads(archive.read(files['src-tauri/tauri.conf.json']))
         require(config['productName'] == 'Editor' and config['version'] == VERSION and config['identifier'] == APP,
                 'source identity mismatch')
@@ -145,7 +153,11 @@ def tar_entries(stream, prefix=''):
     return files
 
 
-def linux_files(files, temp):
+def linux_files(files, temp, package_format):
+    require(files['usr/share/editor-text/install-format'].content == (package_format + "\n").encode(),
+            'wrong installed update format')
+    for name, entry in files.items():
+        privacy_scan(name, entry.content)
     executable = files['usr/bin/editor-text']
     require(executable.mode & 0o111 == 0o111 and not executable.mode & 0o6000, 'invalid executable permissions')
     binary = temp / 'linux-editor'
@@ -165,7 +177,8 @@ def linux_files(files, temp):
             'desktop launcher metadata mismatch')
     require({'text/plain', 'text/markdown','application/json'}.issubset(group['MimeType'].split(';')),
             'desktop MIME registration missing')
-    require(files['usr/share/doc/editor-text/copyright'].content == LICENCE, 'Linux license mismatch')
+    require(files['usr/share/doc/editor-text/LICENSE'].content == LICENCE, 'Linux license mismatch')
+    require(files['usr/share/doc/editor-text/NOTICE'].content == (ROOT/'NOTICE').read_bytes(), 'Linux notice mismatch')
     require(files['usr/share/doc/editor-text/THIRD-PARTY-NOTICES.txt'].content ==
             (ROOT/'THIRD-PARTY-NOTICES.txt').read_bytes(), 'Linux third-party notices mismatch')
     for size in SIZES:
@@ -178,7 +191,7 @@ def linux_files(files, temp):
 def rpm(path, temp):
     run('rpm','--checksig','--nosignature',path)
     name, version, arch, license_id = run('rpm','-qp','--qf','%{NAME}\n%{VERSION}\n%{ARCH}\n%{LICENSE}',path).decode().splitlines()
-    require(name == 'Editor' and ' ' not in name and (version,arch,license_id) == (VERSION,'x86_64','Apache-2.0'),
+    require(name == 'editor-text' and ' ' not in name and (version,arch,license_id) == (VERSION,'x86_64','AGPL-3.0-only'),
             'RPM metadata mismatch')
     deps = run('rpm','-qpR',path).decode()
     require('webkit2gtk4.1' in deps and 'gtk3' in deps, 'RPM runtime requirements missing')
@@ -193,7 +206,7 @@ def rpm(path, temp):
         name = safe_path(raw)
         if stat.S_ISREG(modes.get(name,0)):
             files[name] = Entry(run('cpio','-i','--to-stdout','--quiet',raw,data=payload),modes[name])
-    return linux_files(files,temp)
+    return linux_files(files,temp,'rpm')
 
 
 def deb(path, temp):
@@ -210,7 +223,7 @@ def deb(path, temp):
     fields = dict(line.split(': ',1) for line in meta['control'].content.decode().splitlines() if ': ' in line and not line.startswith(' '))
     require((fields['Package'],fields['Version'],fields['Architecture']) == ('editor-text',VERSION,'amd64'),
             'DEB control identity mismatch')
-    floor = linux_files(files,temp)
+    floor = linux_files(files,temp,'deb')
     deps = fields['Depends']
     minimum = re.search(r'libc6 \(>= ([\d.]+)\)',deps)
     require(minimum and tuple(map(int,minimum[1].split('.'))) >= floor and
@@ -225,9 +238,9 @@ def deb(path, temp):
 def tar_package(path, temp):
     run('gzip','-t',path)
     with path.open('rb') as stream:
-        files = tar_entries(stream,f'Editor-{VERSION}-linux-x64/')
+        files = tar_entries(stream,f'Editor-V{VERSION}/')
     require(files['install.sh'].mode & 0o111 and files['README.txt'].content, 'TAR install mechanism missing')
-    return linux_files(files,temp)
+    return linux_files(files,temp,'tar')
 
 
 def pe_machine(data):
@@ -255,9 +268,12 @@ def windows(path, temp):
         matches = [n for n in names if n.replace('\\','/').split('/')[-1].casefold() == basename.casefold()]
         require(len(matches) == 1, f'expected one {basename} in installer, found {len(matches)}')
         return run('7z','x','-so','-tNsis',path,matches[0])
+    for member in names:
+        privacy_scan(member, run('7z','x','-so','-tNsis',path,member))
     app = content('editor.exe')
     require(pe_machine(app) == (0x8664,0x20b),'NSIS payload is not x86-64 PE32+')
     require(content('LICENSE') == LICENCE, 'installer license mismatch')
+    require(content('NOTICE') == (ROOT/'NOTICE').read_bytes(), 'installer notice mismatch')
     require(content('THIRD-PARTY-NOTICES.txt') == (ROOT/'THIRD-PARTY-NOTICES.txt').read_bytes(),
             'installer third-party notices mismatch')
     binary = temp/'windows-editor.exe'
@@ -278,7 +294,7 @@ def portable(path, platform, temp):
                 continue
             require(name.startswith(prefix) and name not in names, f'unexpected ZIP member {name}')
             names.add(name)
-        expected = {'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'README.txt'}
+        expected = {'LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES.txt', 'README.txt'}
         if platform == 'windows':
             expected.add('Editor.exe')
         else:
@@ -286,6 +302,7 @@ def portable(path, platform, temp):
         require(names == {prefix + name for name in expected}, f'unexpected {platform} portable ZIP contents')
         def content(name):
             return archive.read(prefix + name)
+        require(content('NOTICE') == (ROOT/'NOTICE').read_bytes(), 'portable notice mismatch')
         require(content('LICENSE') == LICENCE and content('THIRD-PARTY-NOTICES.txt') ==
                 (ROOT/'THIRD-PARTY-NOTICES.txt').read_bytes(), f'{platform} portable notices mismatch')
         require(content('README.txt') == (ROOT/f'packaging/{platform.upper()}-PORTABLE-README.txt').read_bytes(),
@@ -328,7 +345,7 @@ def verify(root, linux_only=False, with_portable=False):
     require(root.is_dir() and not root.is_symlink(),'release directory missing or linked')
     artifacts = {kind: name for kind, name in ARTIFACTS.items() if not linux_only or kind != 'Windows'}
     expected = {Path(name) for name in artifacts.values()}
-    archives = {kind: Path(filename).parent / f'Editor-{VERSION}-{kind}-Source.zip'
+    archives = {kind: Path(filename).parent / f'Editor-V{VERSION}-{kind}-Source.zip'
                 for kind,filename in artifacts.items()}
     expected.update(archives.values())
     portables = {}

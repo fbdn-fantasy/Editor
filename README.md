@@ -7,6 +7,7 @@ Simply open the application and start typing.
 ## Features
 
 - **Tabbed editing** – Open and edit multiple files in a single window, with independent undo and redo history.
+- **Empty documents** – Save a blank document with or without a file extension.
 - **Automatic language detection** – Recognizes programming languages as you type, even before saving a file.
 - **Syntax highlighting** – Makes source code easier to read and navigate.
 - **Predictive typing** – Suggests keywords, functions, variables, and existing document words. Accept suggestions using Tab or disable code assistance whenever you prefer.
@@ -16,6 +17,7 @@ Simply open the application and start typing.
 - **Editing guides** – Line numbers, indentation guides, bracket matching, and a live character counter.
 - **Light and dark modes** – Follow your system theme or choose your own preference.
 - **Accessibility** – Adjust interface scaling, text size, line spacing, and contrast.
+- **Update button** – Choose Help → Check for Updates to download and install a newer release for your platform when one is available.
 
 All editing features, language detection, and code suggestions work locally without requiring an internet connection.
 
@@ -46,4 +48,4 @@ Visit the [Releases](../../releases) section to download the latest version.
 
 ## License
 
-Editor is free and open-source software released under the [Apache License 2.0](LICENSE).
+Editor is free and open-source software released under the [GNU Affero General Public License v3.0 only](LICENSE).

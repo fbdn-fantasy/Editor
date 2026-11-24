@@ -18,6 +18,8 @@ export interface DocumentTab {
   metrics: EditorMetrics
   error: string
   recoveryError: string
+  // Preserve the origin in the crash journal while the recovered tab awaits Save As.
+  recoveredFrom: string | null
   conflict: boolean
   conflictAsked: boolean
   resolving: boolean
@@ -52,6 +54,7 @@ export class Workspace {
       encoding: file?.encoding ?? recovery?.encoding ?? 'UTF-8', eol: file?.eol ?? recovery?.eol ?? 'LF',
       version: file?.version ?? null, revision: recovery ? 1 : 0, persisted: 0, metrics: { ...emptyMetrics },
       error: '', recoveryError: '', conflict: false, conflictAsked: false, resolving: false, saving: false, closed: false,
+      recoveredFrom: recovery?.path ?? null,
       saves: Promise.resolve(true), journal: Promise.resolve(),
     }
     this.tabs.push(doc)
@@ -126,8 +129,9 @@ export class Workspace {
       else if (!doc.closed) {
         const text = this.editor.text(doc.id)
         const dest = doc.saveDestination
-        if (!doc.path && !dest && !text) await this.api.forgetRecovery(doc.id)
-        else await this.api.recover({ id: doc.id, name: dest ? basename(dest.path) : doc.name, path: dest?.path ?? doc.path, text, encoding: dest?.encoding ?? doc.encoding, eol: doc.eol })
+        const path = dest?.path ?? doc.path ?? doc.recoveredFrom
+        if (!path && !text) await this.api.forgetRecovery(doc.id)
+        else await this.api.recover({ id: doc.id, name: dest ? basename(dest.path) : doc.name, path, text, encoding: dest?.encoding ?? doc.encoding, eol: doc.eol })
       }
       if (doc.recoveryError) { doc.recoveryError = ''; this.notify() }
     }).catch(e => { doc.recoveryError = `Recovery copy failed. ${message(e)}`; this.notify() })
@@ -205,11 +209,14 @@ export class Workspace {
         await this.journal(doc)
       }
       const revision = doc.revision
-      const version = await this.api.write(target, this.editor.text(doc.id), encoding, doc.eol)
+      clearTimeout(doc.saveTimer)
+      doc.saveTimer = undefined
+      const version = await this.api.write(target, this.editor.text(doc.id), encoding, doc.eol, origin)
       doc.saveDestination = undefined
       doc.version = version
       doc.persisted = revision
       doc.path = target.path
+      doc.recoveredFrom = null
       doc.encoding = encoding
       const name = basename(doc.path)
       if (origin !== doc.path) this.editor.rename(doc.id, doc.path)
@@ -287,7 +294,7 @@ export class Workspace {
   private async readyToClose(doc: DocumentTab) {
     await doc.saves
     while (dirty(doc)) {
-      if (!doc.path && !this.editor.text(doc.id) && !doc.conflict) break
+      if (!doc.path && !doc.recoveredFrom && !this.editor.text(doc.id) && !doc.conflict) break
       if (doc.path && !doc.conflict && !doc.error && await this.save(doc)) continue
       const rev = doc.revision
       const choice = await this.ask('Save changes?', `Save changes to ${doc.name} before closing?`, ['Cancel', 'Discard', 'Save'])

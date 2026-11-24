@@ -24,6 +24,8 @@ pub struct Document {
     pub encoding: String,
     pub eol: String,
     pub version: String,
+    #[serde(skip)]
+    mixed_endings: bool,
 }
 
 #[derive(Deserialize)]
@@ -58,6 +60,9 @@ impl From<&Metadata> for Stamp {
 pub struct Files {
     grants: HashSet<PathBuf>,
     cache: HashMap<PathBuf, (Stamp, String)>,
+    // CodeMirror normalizes line breaks. Keep the original bytes only for
+    // documents whose individual separators cannot be inferred from their EOL.
+    mixed_originals: HashMap<PathBuf, Vec<u8>>,
 }
 
 pub fn path_string(p: &Path) -> Result<String> {
@@ -225,7 +230,7 @@ fn split_lines(s: &str) -> impl Iterator<Item = (&str, &str)> {
     })
 }
 
-fn line_style(raw: &str) -> &'static str {
+fn line_style(raw: &str) -> (&'static str, bool) {
     let mut counts = [0usize; 3];
     for (_, sep) in split_lines(raw) {
         match sep {
@@ -235,13 +240,14 @@ fn line_style(raw: &str) -> &'static str {
             _ => {}
         }
     }
-    if counts[1] > counts[0] && counts[1] >= counts[2] {
+    let style = if counts[1] > counts[0] && counts[1] >= counts[2] {
         "CRLF"
     } else if counts[2] > counts[0] && counts[2] > counts[1] {
         "CR"
     } else {
         "LF"
-    }
+    };
+    (style, counts.iter().filter(|&&count| count > 0).count() > 1)
 }
 
 pub fn decode(path: &Path, bytes: &[u8], legacy: bool) -> Result<Document> {
@@ -255,7 +261,7 @@ pub fn decode(path: &Path, bytes: &[u8], legacy: bool) -> Result<Document> {
     if raw.len() > LIMIT {
         return Err("Decoded text exceeds the 16 MiB editing limit.".into());
     }
-    let eol = line_style(&raw);
+    let (eol, mixed_endings) = line_style(&raw);
     let text = if raw.contains('\r') {
         raw.replace("\r\n", "\n").replace('\r', "\n")
     } else {
@@ -272,6 +278,7 @@ pub fn decode(path: &Path, bytes: &[u8], legacy: bool) -> Result<Document> {
         encoding: encoding.into(),
         eol: eol.into(),
         version: hash(bytes),
+        mixed_endings,
     })
 }
 
@@ -337,8 +344,7 @@ fn encode(text: &str, encoding: &str, eol: &str, previous: Option<&[u8]>) -> Res
         return Err("Text exceeds the 16 MiB editing limit.".into());
     }
     let original = previous.and_then(|b| unpack(b, true).ok()).map(|v| v.0);
-    let preserve = original.as_deref().filter(|s| line_style(s) == eol);
-    let raw = restore_separators(text, preserve.unwrap_or(""), sep);
+    let raw = restore_separators(text, original.as_deref().unwrap_or(""), sep);
     let bytes = match encoding {
         "UTF-8" => raw.into_bytes(),
         "UTF-8 BOM" => [&[0xef, 0xbb, 0xbf], raw.as_bytes()].concat(),
@@ -465,12 +471,21 @@ impl Files {
     pub fn forget(&mut self, path: &Path) {
         self.grants.remove(path);
         self.cache.remove(path);
+        self.mixed_originals.remove(path);
+    }
+    fn remember_layout(&mut self, path: &Path, bytes: Vec<u8>, mixed: bool) {
+        if mixed {
+            self.mixed_originals.insert(path.into(), bytes);
+        } else {
+            self.mixed_originals.remove(path);
+        }
     }
     pub fn read(&mut self, path: &Path, legacy: bool) -> Result<Document> {
         self.allowed(path)?;
         let stamp = fs::metadata(path).ok().as_ref().map(Stamp::from);
         let bytes = bytes_at(path)?.ok_or("The file no longer exists.")?;
         let doc = decode(path, &bytes, legacy)?;
+        self.remember_layout(path, bytes, doc.mixed_endings);
         if let Some(stamp) = stamp {
             self.cache.insert(path.into(), (stamp, doc.version.clone()));
         }
@@ -506,6 +521,7 @@ impl Files {
         encoding: &str,
         eol: &str,
         expected: Option<&str>,
+        source: Option<&Path>,
     ) -> Result<String> {
         self.allowed(path)?;
         if binary_name(path) {
@@ -521,9 +537,12 @@ impl Files {
             decode(path, bytes, true)?;
             OpenOptions::new().write(true).open(path).map_err(err)?;
         }
-        let bytes = encode(text, encoding, eol, previous.as_deref())?;
+        let original = source.and_then(|p| self.mixed_originals.get(p));
+        let bytes = encode(text, encoding, eol, original.map(Vec::as_slice))?;
+        let preserve_mixed = original.is_some();
         let version = hash(&bytes);
         if expected == Some(version.as_str()) {
+            self.remember_layout(path, bytes, preserve_mixed);
             return Ok(version);
         }
         let mut tmp =
@@ -558,6 +577,7 @@ impl Files {
         #[cfg(not(windows))]
         install(tmp, path, expected.is_some())?;
         self.cache.remove(path);
+        self.remember_layout(path, bytes, preserve_mixed);
         Ok(version)
     }
 }
@@ -603,6 +623,19 @@ mod tests {
         assert!(decode(path, b"MZ is a prefix in my notes", false).is_ok());
     }
     #[test]
+    fn blank_extensionless_file_roundtrips_without_adding_bytes_or_a_suffix() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("notes");
+        let mut files = Files::default();
+        files.grant(&path).unwrap();
+        let version = files.write(&path, "", "UTF-8", "LF", None, Some(&path)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(files.read(&path, false).unwrap().text, "");
+        files.write(&path, "next", "UTF-8", "LF", Some(&version), Some(&path)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"next");
+    }
+    #[test]
     fn mixed_endings_survive_insert_deletion_and_replacement() {
         let original = b"a\nb\r\nc\rd\n";
         assert_eq!(
@@ -619,29 +652,51 @@ mod tests {
         );
     }
     #[test]
+    fn save_as_preserves_the_open_documents_mixed_endings() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("original.txt");
+        let copy = dir.path().join("copy.txt");
+        let original = b"a\r\nb\nc\rd\n";
+        fs::write(&source, original).unwrap();
+        let mut files = Files::default();
+        files.grant(&source).unwrap();
+        files.grant(&copy).unwrap();
+        let doc = files.read(&source, false).unwrap();
+        fs::remove_file(&source).unwrap();
+        let saved = files.write(&copy, &doc.text, &doc.encoding, &doc.eol, None, Some(&source)).unwrap();
+        assert_eq!(fs::read(&copy).unwrap(), original);
+        files.forget(&source);
+        let changed = files.write(&copy, "a\nB\nc\nd\n", "UTF-8", "LF", Some(&saved), Some(&copy)).unwrap();
+        assert_eq!(fs::read(&copy).unwrap(), b"a\r\nB\nc\rd\n");
+        // Saving an untitled document over that same target uses the new
+        // document's formatting, regardless of what the destination contains.
+        files.write(&copy, &doc.text, "UTF-8", "LF", Some(&changed), None).unwrap();
+        assert_eq!(fs::read(&copy).unwrap(), b"a\nb\nc\nd\n");
+    }
+    #[test]
     fn grants_detect_stale_saves_and_deleted_files() {
         let dir = tempdir().unwrap();
         let p = dir.path().join("space 🧪.txt");
         let mut f = Files::default();
         assert!(f.read(&p, false).is_err());
-        assert!(f.write(&p, "x", "UTF-8", "LF", None).is_err());
+        assert!(f.write(&p, "x", "UTF-8", "LF", None, Some(&p)).is_err());
         f.grant(&p).unwrap();
         assert!(!p.exists());
-        let rev = f.write(&p, "one", "UTF-8", "LF", None).unwrap();
+        let rev = f.write(&p, "one", "UTF-8", "LF", None, Some(&p)).unwrap();
         assert_eq!(f.read(&p, false).unwrap().version, rev);
         fs::write(&p, "two").unwrap();
         assert_ne!(f.version(&p, true).unwrap(), Some(rev.clone()));
         assert!(
-            f.write(&p, "lost?", "UTF-8", "LF", Some(&rev))
+            f.write(&p, "lost?", "UTF-8", "LF", Some(&rev), Some(&p))
                 .unwrap_err()
                 .starts_with("CONFLICT:")
         );
         assert_eq!(fs::read(&p).unwrap(), b"two");
         let next = f.version(&p, false).unwrap().unwrap();
         fs::remove_file(&p).unwrap();
-        assert!(f.write(&p, "three", "UTF-8", "LF", Some(&next)).is_err());
+        assert!(f.write(&p, "three", "UTF-8", "LF", Some(&next), Some(&p)).is_err());
         assert!(!p.exists());
-        assert!(f.write(&p, "three", "UTF-8", "LF", None).is_ok());
+        assert!(f.write(&p, "three", "UTF-8", "LF", None, Some(&p)).is_ok());
     }
     #[test]
     fn failed_conversion_preserves_original_bytes_and_no_temporary_files() {
@@ -652,7 +707,7 @@ mod tests {
         f.grant(&p).unwrap();
         let d = f.read(&p, true).unwrap();
         assert!(
-            f.write(&p, "€🧪", &d.encoding, &d.eol, Some(&d.version))
+            f.write(&p, "€🧪", &d.encoding, &d.eol, Some(&d.version), Some(&p))
                 .is_err()
         );
         assert_eq!(fs::read(&p).unwrap(), b"\x80");
@@ -679,7 +734,7 @@ mod tests {
         let mut f = Files::default();
         let granted = PathBuf::from(f.grant(&link).unwrap());
         let v = f.read(&granted, false).unwrap().version;
-        f.write(&granted, "two", "UTF-8", "LF", Some(&v)).unwrap();
+        f.write(&granted, "two", "UTF-8", "LF", Some(&v), Some(&granted)).unwrap();
         assert!(link.is_symlink());
         assert_eq!(fs::read(link).unwrap(), b"two");
         assert_eq!(fs::metadata(p).unwrap().permissions().mode() & 0o777, 0o750);

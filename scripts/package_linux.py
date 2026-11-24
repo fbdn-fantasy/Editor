@@ -9,7 +9,7 @@ import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "1.0.1"
+VERSION = "1.0.3"
 APP_ID = "app.editor.TextEditor"
 
 
@@ -52,7 +52,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: Editor <editor@localhost>
 Installed-Size: {(size + 1023) // 1024}
-Depends: libc6 (>= {libc}), libgcc-s1, libgtk-3-0 | libgtk-3-0t64, libwebkit2gtk-4.1-0 (>= 2.40), libjavascriptcoregtk-4.1-0, libsoup-3.0-0, libcairo2, libgdk-pixbuf-2.0-0, libglib2.0-0 | libglib2.0-0t64, libdbus-1-3
+Depends: libc6 (>= {libc}), libgcc-s1, libgtk-3-0 | libgtk-3-0t64, libwebkit2gtk-4.1-0 (>= 2.40), libjavascriptcoregtk-4.1-0, libsoup-3.0-0, libcairo2, libgdk-pixbuf-2.0-0, libglib2.0-0 | libglib2.0-0t64, libdbus-1-3, libx11-6, curl, pkexec | policykit-1, apt
 Description: Desktop text and source-code editor
  Edits plain text and code using local language detection and highlighting.
 """)
@@ -62,7 +62,7 @@ Description: Desktop text and source-code editor
     (temp / "debian-binary").write_bytes(b"2.0\n")
     tar_gz(control, temp / "control.tar.gz")
     tar_gz(payload, temp / "data.tar.gz")
-    name = f"editor_{VERSION}_amd64.deb"
+    name = f"Editor-V{VERSION}.deb"
     subprocess.run(["ar", "rcD", name, "debian-binary", "control.tar.gz", "data.tar.gz"],
                    cwd=temp, check=True)
     install(temp / name, output / "Linux/DEB" / name)
@@ -82,7 +82,14 @@ def main():
         temp = Path(staging)
         payload = temp / "SOURCES/payload"
         install(binary, payload / "usr/bin/editor-text", 0o755)
-        install(ROOT / "LICENSE", payload / "usr/share/doc/editor-text/copyright")
+        docs = payload / "usr/share/doc/editor-text"
+        for name in ("LICENSE", "NOTICE"):
+            install(ROOT / name, docs / name)
+        marker = payload / "usr/share/editor-text/install-format"
+        marker.parent.mkdir(parents=True)
+        marker.write_text(args.target + "\n")
+        if args.target == "deb":
+            install(ROOT / "LICENSE", docs / "copyright")
         install(ROOT / "THIRD-PARTY-NOTICES.txt", payload / "usr/share/doc/editor-text/THIRD-PARTY-NOTICES.txt")
         desktop = f"{APP_ID}.desktop"
         install(ROOT / "packaging" / desktop, payload / "usr/share/applications" / desktop)
@@ -92,15 +99,16 @@ def main():
                     payload / f"usr/share/icons/hicolor/{label}/apps/{APP_ID}.png")
         if args.target == "rpm":
             subprocess.run(["rpmbuild", "-bb", "--define", f"_topdir {staging}", "--define", f"_tmppath {staging}",
+                            "--define", "_buildhost localhost",
                             ROOT / "packaging/editor.spec"], check=True)
             rpm, = (temp / "RPMS/x86_64").glob("*.rpm")
-            install(rpm, output / f"Linux/RPM/Editor-{VERSION}.x86_64.rpm")
+            install(rpm, output / "Linux/RPM" / rpm.name)
         if args.target == "deb":
             build_deb(payload, temp, output, binary)
         if args.target == "tar":
             install(ROOT / "packaging/install.sh", payload / "install.sh", 0o755)
             install(ROOT / "packaging/TAR-README.txt", payload / "README.txt")
-            name = f"Editor-{VERSION}-linux-x64"
+            name = f"Editor-V{VERSION}"
             tar_gz(payload, temp / f"{name}.tar.gz", prefix=f"{name}/")
             install(temp / f"{name}.tar.gz", output / f"Linux/TAR/{name}.tar.gz")
 

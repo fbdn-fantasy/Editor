@@ -1,9 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod clipboard;
+mod desktops;
 mod files;
 mod geometry;
+#[cfg(target_os = "linux")]
+mod linux_instance;
 mod recovery;
+mod updates;
 
 use files::{Document, Files, Result, Tracked, atomic_data, err};
 use geometry::Geometry;
@@ -11,25 +15,44 @@ use recovery::Recovery;
 use serde::Serialize;
 use serde_json::Value;
 use std::{
+    collections::HashMap,
     fs,
     io::{ErrorKind, Read},
     path::{Path, PathBuf},
     sync::{
-        Mutex, MutexGuard,
-        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc,
     },
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 
 #[derive(Default)]
-struct Backend {
+struct Session {
     files: Mutex<Files>,
-    paths: Mutex<Vec<String>>,
-    storage: Mutex<()>,
+    launches: Mutex<Vec<Vec<String>>>,
+    desktop: Mutex<desktops::Desktop>,
     geometry: Mutex<Geometry>,
     shown: AtomicBool,
     exiting: AtomicBool,
+    last_focus: AtomicU64,
+}
+
+#[derive(Default)]
+struct Backend {
+    sessions: Mutex<HashMap<String, Arc<Session>>>,
+    sequence: AtomicU64,
+    storage: Mutex<()>,
+    writes: Mutex<()>,
+    startup_recovery: Mutex<Option<Result<(Vec<Recovery>, usize)>>>,
+}
+
+fn session(window: &WebviewWindow) -> Result<Arc<Session>> {
+    lock(&window.state::<Backend>().sessions)?
+        .get(window.label())
+        .cloned()
+        .ok_or_else(|| "The editor window has closed.".into())
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
@@ -91,23 +114,94 @@ async fn save_settings(app: AppHandle, settings: Value) -> Result<()> {
     .await
 }
 
-fn queue(app: &AppHandle, cwd: &Path, args: impl Iterator<Item = PathBuf>) {
-    let b = app.state::<Backend>();
-    if let (Ok(mut f), Ok(mut paths)) = (b.files.lock(), b.paths.lock()) {
-        for arg in args.filter(|p| p.as_os_str() != "--") {
-            let p = cwd.join(arg);
-            // Return inaccessible paths as well so the interface can report a failure.
-            paths.push(
-                f.grant(&p)
-                    .unwrap_or_else(|_| p.to_string_lossy().into_owned()),
-            );
-        }
+fn queue(session: &Session, cwd: &Path, args: impl Iterator<Item = PathBuf>) -> Result<bool> {
+    let mut pending = lock(&session.launches)?;
+    if session.exiting.load(Ordering::Acquire) {
+        return Ok(false);
     }
+    let mut files = lock(&session.files)?;
+    let batch = args
+        .filter(|p| p.as_os_str() != "--")
+        .map(|arg| {
+            let path = cwd.join(arg);
+            // Preserve inaccessible paths so the user sees the open error in this window.
+            files
+                .grant(&path)
+                .unwrap_or_else(|_| path.to_string_lossy().into_owned())
+        })
+        .collect();
+    pending.push(batch);
+    Ok(true)
 }
 
 #[tauri::command]
-fn take_paths(app: AppHandle) -> Result<Vec<String>> {
-    Ok(std::mem::take(&mut *lock(&app.state::<Backend>().paths)?))
+fn take_launches(window: WebviewWindow) -> Result<Vec<Vec<String>>> {
+    Ok(std::mem::take(&mut *lock(&session(&window)?.launches)?))
+}
+
+fn destination(app: &AppHandle) -> Result<(desktops::Desktop, Option<WebviewWindow>)> {
+    let (reply, decision) = mpsc::sync_channel(1);
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let active = desktops::current();
+        let chosen = handle
+            .webview_windows()
+            .into_values()
+            .filter_map(|window| {
+                let state = session(&window).ok()?;
+                if state.exiting.load(Ordering::Acquire) {
+                    return None;
+                }
+                let desktop = *state.desktop.lock().ok()?;
+                desktops::contains(
+                    &window,
+                    desktop,
+                    active,
+                    state.shown.load(Ordering::Acquire),
+                )
+                .then(|| (state.last_focus.load(Ordering::Relaxed), window))
+            })
+            .max_by_key(|(stamp, _)| *stamp)
+            .map(|(_, window)| window);
+        let _ = reply.send((active, chosen));
+    })
+    .map_err(err)?;
+    decision.recv().map_err(err)
+}
+
+fn route(app: &AppHandle, cwd: &Path, args: Vec<String>) -> Result<()> {
+    let (desktop, target) = destination(app)?;
+    let paths = || args.iter().skip(1).map(PathBuf::from);
+    if let Some(window) = target
+        && let Ok(state) = session(&window)
+        && queue(&state, cwd, paths())?
+    {
+        app.emit_to(window.label(), "paths-available", ())
+            .map_err(err)?;
+        if state.shown.load(Ordering::Acquire) {
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+        return Ok(());
+    }
+    let backend = app.state::<Backend>();
+    let label = format!(
+        "editor-{}",
+        backend.sequence.fetch_add(1, Ordering::Relaxed)
+    );
+    let state = Arc::new(Session::default());
+    *lock(&state.desktop)? = desktop;
+    queue(&state, cwd, paths())?;
+    lock(&backend.sessions)?.insert(label.clone(), state);
+    let mut config = app.config().app.windows[0].clone();
+    config.label = label.clone();
+    if let Err(error) =
+        tauri::WebviewWindowBuilder::from_config(app, &config).and_then(|builder| builder.build())
+    {
+        lock(&backend.sessions)?.remove(&label);
+        return Err(err(error));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -115,7 +209,7 @@ async fn choose_open(app: AppHandle, window: WebviewWindow) -> Result<Vec<String
     let dlg = app.dialog().file().set_parent(&window).set_title("Open");
     blocking(move || {
         let picked = dlg.blocking_pick_files().unwrap_or_default();
-        let b = app.state::<Backend>();
+        let b = session(&window)?;
         let mut files = lock(&b.files)?;
         picked
             .into_iter()
@@ -141,17 +235,18 @@ async fn choose_save(
         .file_name()
         .unwrap_or_default()
         .to_string_lossy();
+    // A default extension in the native dialog would change extensionless names.
     let dlg = app
         .dialog()
         .file()
         .set_parent(&window)
         .set_file_name(name)
-        .set_title("Save As");
+        .set_title("Save As (file extension optional)");
     blocking(move || {
         let Some(p) = dlg.blocking_save_file() else {
             return Ok(None);
         };
-        let b = app.state::<Backend>();
+        let b = session(&window)?;
         let mut files = lock(&b.files)?;
         let path = files.grant(&p.into_path().map_err(err)?)?;
         let version = files.version(Path::new(&path), false)?;
@@ -161,43 +256,47 @@ async fn choose_save(
 }
 
 #[tauri::command]
-async fn read_file(app: AppHandle, path: String, legacy: Option<bool>) -> Result<Document> {
+async fn read_file(window: WebviewWindow, path: String, legacy: Option<bool>) -> Result<Document> {
     blocking(move || {
-        lock(&app.state::<Backend>().files)?.read(Path::new(&path), legacy.unwrap_or(false))
+        lock(&session(&window)?.files)?.read(Path::new(&path), legacy.unwrap_or(false))
     })
     .await
 }
 
 #[tauri::command]
 async fn write_file(
-    app: AppHandle,
+    window: WebviewWindow,
     path: String,
     text: String,
     encoding: String,
     eol: String,
     version: Option<String>,
+    source: Option<String>,
 ) -> Result<String> {
     blocking(move || {
-        lock(&app.state::<Backend>().files)?.write(
+        let backend = window.state::<Backend>();
+        let _guard = lock(&backend.writes)?;
+        lock(&session(&window)?.files)?.write(
             Path::new(&path),
             &text,
             &encoding,
             &eol,
             version.as_deref(),
+            source.as_deref().map(Path::new),
         )
     })
     .await
 }
 
 #[tauri::command]
-async fn disk_version(app: AppHandle, path: String) -> Result<Option<String>> {
-    blocking(move || lock(&app.state::<Backend>().files)?.version(Path::new(&path), false)).await
+async fn disk_version(window: WebviewWindow, path: String) -> Result<Option<String>> {
+    blocking(move || lock(&session(&window)?.files)?.version(Path::new(&path), false)).await
 }
 
 #[tauri::command]
-async fn changed_files(app: AppHandle, files: Vec<Tracked>) -> Result<Vec<String>> {
+async fn changed_files(window: WebviewWindow, files: Vec<Tracked>) -> Result<Vec<String>> {
     blocking(move || {
-        let b = app.state::<Backend>();
+        let b = session(&window)?;
         let mut f = lock(&b.files)?;
         // An unreadable replacement still requires the editor to suspend autosave.
         Ok(files
@@ -212,23 +311,28 @@ async fn changed_files(app: AppHandle, files: Vec<Tracked>) -> Result<Vec<String
 }
 
 #[tauri::command]
-async fn forget_path(app: AppHandle, path: String) -> Result<()> {
+async fn forget_path(window: WebviewWindow, path: String) -> Result<()> {
     blocking(move || {
-        lock(&app.state::<Backend>().files)?.forget(Path::new(&path));
+        lock(&session(&window)?.files)?.forget(Path::new(&path));
         Ok(())
     })
     .await
 }
 
 #[tauri::command]
-async fn list_recovery(app: AppHandle) -> Result<Vec<Recovery>> {
+async fn list_recovery(app: AppHandle, window: WebviewWindow) -> Result<Vec<Recovery>> {
+    // Journals from this run can belong to a live window on another desktop.
+    // Only the first window offers the previous process's recovery records.
+    if window.label() != "main" {
+        return Ok(Vec::new());
+    }
     blocking(move || {
         let b = app.state::<Backend>();
         let _guard = lock(&b.storage)?;
-        let dir=recovery_dir(&app)?;
-        let (entries,damaged)=recovery::list(&dir)?;
-        if damaged>0 {
-            let _=app.emit("recovery-warning",format!("Could not read {damaged} recovery record(s). The original bytes were kept in {} with a .damaged suffix.",dir.display()));
+        let (entries, damaged) = lock(&b.startup_recovery)?.take().transpose()?.unwrap_or_default();
+        if damaged > 0 {
+            let notice = format!("Could not read {damaged} recovery record(s). The recovery folder contains the original files with a .damaged suffix.");
+            let _ = app.emit_to(window.label(), "recovery-warning", notice);
         }
         Ok(entries)
     })
@@ -281,26 +385,42 @@ fn apply_theme(window: WebviewWindow, theme: String) -> Result<()> {
 
 #[tauri::command]
 fn reveal_window(window: WebviewWindow) -> Result<()> {
+    let state = session(&window)?;
+    if let Ok(Some(saved)) =
+        read_json::<Geometry>(&config(window.app_handle())?.join("window.json"))
+    {
+        *lock(&state.geometry)? = saved;
+        let _ = geometry::restore(&window, saved);
+    } else {
+        let _ = window.maximize();
+    }
     window.show().map_err(err)?;
-    window
-        .state::<Backend>()
-        .shown
-        .store(true, Ordering::Release);
-    window.set_focus().map_err(err)
+    state.shown.store(true, Ordering::Release);
+    let _ = window.set_focus();
+    Ok(())
 }
 
 #[tauri::command]
 fn finish_exit(window: WebviewWindow) -> Result<()> {
-    let b = window.state::<Backend>();
-    let mut g = lock(&b.geometry)?;
-    geometry::capture(&window, &mut g);
+    let state = session(&window)?;
+    let mut saved = *lock(&state.geometry)?;
+    geometry::capture(&window, &mut saved);
     atomic_data(
         &config(window.app_handle())?.join("window.json"),
-        &serde_json::to_vec(&*g).map_err(err)?,
+        &serde_json::to_vec(&saved).map_err(err)?,
     )?;
-    b.exiting.store(true, Ordering::Release);
-    window.app_handle().exit(0);
-    Ok(())
+    {
+        let pending = lock(&state.launches)?;
+        if !pending.is_empty() {
+            return Err("A new document was requested while this window was closing. Review it before closing.".into());
+        }
+        state.exiting.store(true, Ordering::Release);
+    }
+    // Destroy only the initiating window. Tauri exits after the final window.
+    window.destroy().map_err(|error| {
+        state.exiting.store(false, Ordering::Release);
+        err(error)
+    })
 }
 
 fn main() {
@@ -322,61 +442,95 @@ fn main() {
             .expect("Could not locate the portable Editor executable");
         let dir = exe.parent().expect("Editor needs an application directory");
         let hash = Sha256::digest(dir.as_os_str().as_encoded_bytes());
-        context.config_mut().identifier.push_str(&format!(".p{}", hex::encode(&hash[..16])));
+        context
+            .config_mut()
+            .identifier
+            .push_str(&format!(".p{}", hex::encode(&hash[..16])));
     }
-    tauri::Builder::default()
-        .manage(Backend::default())
-        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
-            // Never run file inspection from the DBus or Windows message loop.
-            let app = app.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                queue(
-                    &app,
-                    Path::new(&cwd),
-                    argv.into_iter().skip(1).map(PathBuf::from),
-                );
-                let _ = app.emit("paths-available", ());
-                if let Some(w) = app.get_webview_window("main")
-                    && app.state::<Backend>().shown.load(Ordering::Acquire)
-                {
-                    let _ = w.unminimize();
-                    let _ = w.set_focus();
-                }
-            });
-        }))
+    let (launches, pending) = mpsc::channel();
+    #[cfg(target_os = "linux")]
+    let _instance = match linux_instance::acquire(&context.config().identifier, launches)
+        .expect("Could not route the Editor launch")
+    {
+        linux_instance::Instance::Forwarded => return,
+        linux_instance::Instance::Primary(connection) => connection,
+    };
+    let builder = tauri::Builder::default().manage(Backend::default());
+    #[cfg(windows)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(move |_app, argv, cwd| {
+        let _ = launches.send((argv, cwd));
+    }));
+    builder
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let handle = app.handle();
+            #[cfg(windows)]
+            updates::clear_applied(handle);
             fs::create_dir_all(config(handle)?)?;
             fs::create_dir_all(recovery_dir(handle)?)?;
-            let win = app.get_webview_window("main").ok_or("No editor window.")?;
-            if let Ok(Some(g)) = read_json::<Geometry>(&config(handle)?.join("window.json")) {
-                *lock(&app.state::<Backend>().geometry)? = g;
-                let _ = geometry::restore(&win, g);
-            } else {
-                let _ = win.center();
-            }
+            // Snapshot orphaned journals before any new window can write one.
+            *lock(&app.state::<Backend>().startup_recovery)? =
+                Some(recovery::list(&recovery_dir(handle)?));
+            let first = Arc::new(Session::default());
+            *lock(&first.desktop)? = desktops::current();
             queue(
-                handle,
+                &first,
                 &std::env::current_dir()?,
                 std::env::args_os().skip(1).map(PathBuf::from),
-            );
+            )?;
+            lock(&app.state::<Backend>().sessions)?.insert("main".into(), first);
+            let handle = handle.clone();
+            std::thread::spawn(move || {
+                for (args, cwd) in pending {
+                    if let Err(error) = route(&handle, Path::new(&cwd), args) {
+                        handle
+                            .dialog()
+                            .message(error)
+                            .title("Could not open Editor")
+                            .show(|_| {});
+                    }
+                }
+            });
             Ok(())
         })
         .on_window_event(|win, event| {
-            let b = win.state::<Backend>();
+            let backend = win.state::<Backend>();
+            if let WindowEvent::Destroyed = event {
+                if let Ok(mut sessions) = backend.sessions.lock() {
+                    sessions.remove(win.label());
+                }
+                return;
+            }
+            let Some(state) = backend
+                .sessions
+                .lock()
+                .ok()
+                .and_then(|s| s.get(win.label()).cloned())
+            else {
+                return;
+            };
             match event {
                 WindowEvent::CloseRequested { api, .. }
-                    if !b.exiting.load(Ordering::Acquire) && b.shown.load(Ordering::Acquire) =>
+                    if !state.exiting.load(Ordering::Acquire)
+                        && state.shown.load(Ordering::Acquire) =>
                 {
                     api.prevent_close();
-                    let _ = win.emit("close-requested", ());
+                    let _ = win.emit_to(win.label(), "close-requested", ());
+                }
+                WindowEvent::Focused(true) => {
+                    if let Ok(mut desktop) = state.desktop.lock() {
+                        *desktop = desktops::current();
+                    }
+                    state.last_focus.store(
+                        backend.sequence.fetch_add(1, Ordering::Relaxed),
+                        Ordering::Relaxed,
+                    );
                 }
                 WindowEvent::Moved(_) | WindowEvent::Resized(_)
-                    if b.shown.load(Ordering::Acquire) =>
+                    if state.shown.load(Ordering::Acquire) =>
                 {
-                    if let Some(w) = win.get_webview_window("main")
-                        && let Ok(mut g) = b.geometry.try_lock()
+                    if let Some(w) = win.get_webview_window(win.label())
+                        && let Ok(mut g) = state.geometry.try_lock()
                     {
                         geometry::capture(&w, &mut g);
                     }
@@ -387,7 +541,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             load_settings,
             save_settings,
-            take_paths,
+            take_launches,
+            updates::update_editor,
             choose_open,
             choose_save,
             read_file,
@@ -405,6 +560,12 @@ fn main() {
             clipboard::read_clipboard,
             clipboard::write_clipboard
         ])
-        .run(context)
-        .expect("Editor could not start");
+        .build(context)
+        .expect("Editor could not start")
+        .run(|_handle, _event| {
+            #[cfg(windows)]
+            if matches!(_event, tauri::RunEvent::Exit) {
+                updates::on_exit(_handle);
+            }
+        });
 }

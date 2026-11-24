@@ -2,7 +2,7 @@
 """Exercise the installed Linux application on an isolated display and D-Bus session.
 
 Run with xvfb-run -a dbus-run-session -- python3 tests/desktop.py /usr/bin/editor-text.
-Requires WebKitWebDriver from the distribution and an available loopback socket.
+Requires WebKitWebDriver, xdotool, xclip and an available loopback socket on a private X11 display.
 """
 import argparse
 import base64
@@ -56,11 +56,24 @@ class Driver:
         self.session = "/session/" + self.request("POST", "/session", {"capabilities":{"alwaysMatch":caps}})["sessionId"]
         eventually(lambda: self.js("return !!document.querySelector('.cm-content')"), "the editor")
 
+    def app_processes(self):
+        profile = os.fsencode("XDG_CONFIG_HOME=" + self.environment["XDG_CONFIG_HOME"])
+        pids = []
+        for proc in Path("/proc").glob("[0-9]*"):
+            try:
+                if (proc/"exe").resolve(strict=True) == self.binary and profile in (proc/"environ").read_bytes().split(b"\0"):
+                    pids.append(int(proc.name))
+            except OSError:
+                continue
+        return pids
+
     def stop(self):
         if self.session:
             with contextlib.suppress(RuntimeError, URLError):
                 self.request("DELETE", self.session)
             self.session = ""
+            # WebDriver may return while the old single-instance owner is exiting.
+            eventually(lambda: not self.app_processes(), "previous test application exit")
 
     def close(self):
         self.stop()
@@ -77,6 +90,12 @@ class Driver:
         self.request("POST", self.session + "/actions", {"actions":[{"type":"key", "id":"keyboard", "actions":down + up}]})
 
     def insert(self, text):
+        if "\n" in text:
+            # Use a real multiline paste on the private X11 display.
+            subprocess.run(["xclip", "-selection", "clipboard", "-i"], input=text.encode(),
+                           env=self.environment, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.key("\ue009", "v")
+            return
         assert self.js("return document.execCommand('insertText', false, arguments[0])", text)
 
     def click(self, selector):
@@ -92,6 +111,55 @@ class Driver:
         eventually(lambda: self.js("return (" + expr + ")"), label)
 
 
+def choose_save_path(driver, target):
+    dialog = subprocess.check_output(
+        ["xdotool", "search", "--sync", "--onlyvisible", "--name", "^Save As"],
+        text=True, timeout=12, env=driver.environment).splitlines()[-1]
+    def xkey(*arguments):
+        subprocess.run(["xdotool", *arguments], check=True, timeout=5, env=driver.environment)
+    xkey("windowfocus", "--sync", dialog)
+    xkey("key", "ctrl+a")
+    xkey("type", str(target))
+    xkey("key", "Return")
+
+
+def save_as_mixed(driver, temp):
+    source = temp / "mixed.txt"
+    copy = temp / "mixed-copy.txt"
+    contents = b"a\r\nb\nc\rd\n"
+    source.write_bytes(contents)
+    driver.start([source])
+    driver.wait("document.querySelector('[role=tab][aria-selected=true]')?.textContent.trim() === 'mixed.txt'", "mixed-line-ending file")
+    driver.key("\ue009", "\ue008", "s")
+    choose_save_path(driver, copy)
+    eventually(copy.is_file, "Save As copy")
+    assert copy.read_bytes() == contents, "Save As changed the source line endings"
+    assert source.read_bytes() == contents
+    print("PASS Save As preserves mixed CRLF, LF and CR byte for byte", flush=True)
+
+
+def forward_without_display(driver, temp):
+    # The existing window owns the UI. A forwarding process only needs its D-Bus session.
+    environment = {**driver.environment, "GDK_BACKEND": "x11"}
+    environment.pop("DISPLAY", None)
+    environment.pop("WAYLAND_DISPLAY", None)
+    tabs = driver.js("return document.querySelectorAll('[role=tab]').length")
+    primary = driver.app_processes()
+    assert len(primary) == 1
+    path = temp / "forwarded β file.txt"
+    path.write_text("forwarded from another working directory", encoding="utf-8")
+    subprocess.run([driver.binary, path.name], cwd=temp, env=environment, timeout=10, check=True)
+    driver.wait(f"document.querySelectorAll('[role=tab]').length === {tabs + 1} && "
+                "document.querySelector('.cm-content')?.textContent === 'forwarded from another working directory'",
+                "forwarded relative filename in the original window")
+    subprocess.run([driver.binary], cwd=temp, env=environment, timeout=10, check=True)
+    driver.wait(f"document.querySelectorAll('[role=tab]').length === {tabs + 2} && "
+                "document.querySelector('[role=tab][aria-selected=true]')?.textContent.startsWith('Untitled')",
+                "forwarded blank document in the original window")
+    assert driver.app_processes() == primary
+    print("PASS file and blank secondary launches forward without a display", flush=True)
+
+
 def run(driver, temp, capture=None):
     ctrl, tab, esc = "\ue009", "\ue004", "\ue00c"
     driver.start()
@@ -100,6 +168,17 @@ def run(driver, temp, capture=None):
     if capture:
         capture.write_bytes(base64.b64decode(driver.request("GET",driver.session + "/screenshot")))
     print("PASS blank startup and keyboard focus", flush=True)
+    driver.key(ctrl, 'n')
+    driver.wait("document.querySelectorAll('[role=tab]').length === 2", "new blank tab")
+    driver.key(ctrl, 's')
+    blank = temp / "empty notes"
+    choose_save_path(driver, blank)
+    eventually(lambda: blank.is_file() and blank.read_bytes() == b"", "zero-byte extensionless file")
+    driver.wait("document.querySelector('[role=tab][aria-selected=true]').textContent.trim() === 'empty notes'", "saved tab name")
+    driver.key(ctrl, 'w')
+    driver.wait("document.querySelectorAll('[role=tab]').length === 1", "close saved blank")
+    driver.wait("document.activeElement.matches('.cm-content')", "focus after closing the saved tab")
+    print("PASS Save creates a zero-byte document with the exact extensionless name", flush=True)
     driver.insert("def example():\n    return 'é😀'")
     driver.wait("document.querySelector('.status-language').textContent === 'Python'", "unsaved language detection")
     assert "30 characters" in driver.text(".count"), driver.text(".count")
@@ -175,13 +254,7 @@ def run(driver, temp, capture=None):
     driver.insert("unsaved recovery probe")
     recovery = temp/"data/app.editor.TextEditor/recovery"
     eventually(lambda: any("unsaved recovery probe" in f.read_text() for f in recovery.glob("*.json")), "durable recovery snapshot")
-    pids = []
-    for proc in Path("/proc").glob("[0-9]*"):
-        try:
-            if (proc/"exe").resolve() == driver.binary and ("XDG_CONFIG_HOME=" + str(temp/"config")).encode() in (proc/"environ").read_bytes().split(b"\0"):
-                pids.append(int(proc.name))
-        except (ProcessLookupError, FileNotFoundError, PermissionError):
-            continue
+    pids = driver.app_processes()
     assert len(pids) == 1, "could not identify the isolated test process"
     os.kill(pids[0], signal.SIGKILL)
     eventually(lambda: not Path(f"/proc/{pids[0]}").exists(), "crashed process exit")
@@ -206,6 +279,9 @@ def run(driver, temp, capture=None):
     driver.key(ctrl, 'n')
     driver.wait("document.querySelector('.count').textContent.includes('0 characters')", "responsive new tab after large open")
     print(f"PASS {len(sample)/1048576:.1f} MiB / 120,000-line log and subsequent input in {time.monotonic()-started:.2f}s", flush=True)
+    driver.stop()
+    save_as_mixed(driver, temp)
+    forward_without_display(driver, temp)
 
 
 
