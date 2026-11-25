@@ -46,6 +46,23 @@ Editor is available for Windows 11 and Linux.
 
 Visit the [Releases](../../releases) section to download the latest version.
 
+## System requirements
+
+All packages are intended for 64-bit Intel and AMD systems (x86-64).
+
+### Windows 11
+
+- Microsoft Edge WebView2 runtime.
+- The installer automatically downloads the runtime if it is missing.
+- The portable edition requires WebView2 to already be installed.
+
+### Linux installers
+
+- X11 or Wayland desktop environment.
+- glibc 2.34 or later.
+- GTK 3.
+- WebKitGTK 4.1.
+
 ## License
 
 Editor is free and open-source software released under the [GNU Affero General Public License v3.0 only](LICENSE).
