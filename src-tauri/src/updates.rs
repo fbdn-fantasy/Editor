@@ -46,10 +46,10 @@ enum Format {
 impl Format {
     fn filename(self, version: &str) -> String {
         match self {
-            Self::Windows => format!("Editor-V{version}-Setup.exe"),
-            Self::Deb => format!("Editor-V{version}.deb"),
-            Self::Rpm => format!("editor-text-{version}-1.x86_64.rpm"),
-            Self::TarUser | Self::TarSystem => format!("Editor-V{version}.tar.gz"),
+            Self::Windows => format!("editor-{version}-Setup.exe"),
+            Self::Deb => format!("editor-{version}.deb"),
+            Self::Rpm => format!("editor-{version}-1.x86_64.rpm"),
+            Self::TarUser | Self::TarSystem => format!("editor-{version}.tar.gz"),
         }
     }
 }
@@ -118,12 +118,12 @@ fn installed_format() -> Result<Format> {
     let data = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute());
-    let (share, scope) = if running_at(Path::new("/usr/bin/editor-text")) {
+    let (share, scope) = if running_at(Path::new("/usr/libexec/editor/editor")) {
         (PathBuf::from("/usr/share"), None)
-    } else if running_at(Path::new("/usr/local/bin/editor-text")) {
+    } else if running_at(Path::new("/usr/local/libexec/editor/editor")) {
         (PathBuf::from("/usr/local/share"), Some(Format::TarSystem))
     } else if let Some(prefix) = home.map(|p| p.join(".local"))
-        && running_at(&prefix.join("bin/editor-text"))
+        && running_at(&prefix.join("libexec/editor/editor"))
     {
         (
             data.unwrap_or_else(|| prefix.join("share")),
@@ -134,7 +134,7 @@ fn installed_format() -> Result<Format> {
             "Automatic installation requires an installed Editor DEB, RPM or TAR package.".into(),
         );
     };
-    let marker = fs::read_to_string(share.join("editor-text/install-format"))
+    let marker = fs::read_to_string(share.join("editor/install-format"))
         .map_err(|_| "The installed Editor package format could not be identified.")?;
     match (marker.trim(), scope) {
         ("deb", None) => Ok(Format::Deb),
@@ -142,6 +142,40 @@ fn installed_format() -> Result<Format> {
         ("tar", Some(format)) => Ok(format),
         _ => Err("The Editor installation has an unexpected package format.".into()),
     }
+}
+
+// V1.0.3 accepts only the original native package identity. Its transition
+// package contains an exact copy of the new package for an offline handoff.
+#[cfg(target_os = "linux")]
+fn migration_asset() -> Result<Option<(Format, PathBuf)>> {
+    let directory = Path::new("/usr/share/editor/legacy-update");
+    if !directory.try_exists().map_err(err)? {
+        return Ok(None);
+    }
+    // Portable and TAR copies can coexist with a system installation.
+    let running = std::env::current_exe().map_err(err)?;
+    if !Path::new("/usr/libexec/editor/editor")
+        .canonicalize()
+        .is_ok_and(|path| path == running)
+    {
+        return Ok(None);
+    }
+    let format = installed_format()?;
+    let filename = match format {
+        Format::Deb => "editor.deb",
+        Format::Rpm => "editor.rpm",
+        _ => return Ok(None),
+    };
+    Ok(Some((format, directory.join(filename))))
+}
+
+#[tauri::command]
+pub fn pending_package_migration(_window: tauri::WebviewWindow) -> Result<bool> {
+    #[cfg(target_os = "linux")]
+    if _window.label() == "main" {
+        return Ok(migration_asset()?.is_some());
+    }
+    Ok(false)
 }
 
 #[cfg(windows)]
@@ -318,7 +352,10 @@ pub fn clear_applied(app: &AppHandle) {
         let name = entry.file_name();
         let Some(tag) = name
             .to_str()
-            .and_then(|name| name.strip_prefix("Editor-V"))
+            .and_then(|name| {
+                name.strip_prefix("editor-")
+                    .or_else(|| name.strip_prefix("Editor-V"))
+            })
             .and_then(|name| name.strip_suffix("-Setup.exe"))
         else {
             continue;
@@ -383,6 +420,19 @@ pub async fn update_editor(app: AppHandle, progress: Channel<String>) -> Result<
             .map_err(|_| "An update check is already in progress.")?;
         if let Some(update) = &*state {
             return Ok(update.message.clone());
+        }
+        #[cfg(target_os = "linux")]
+        if let Some((format, path)) = migration_asset()? {
+            let hash = fs::read_to_string(path.with_extension("sha256")).map_err(err)?;
+            let digest = hash.trim();
+            if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err("The installed update package has an invalid digest.".into());
+            }
+            let _ = progress.send("Finishing the local Editor package update…".into());
+            let applied = install(format, &path, digest, env!("CARGO_PKG_VERSION"))?;
+            let message = applied.message.clone();
+            *state = Some(applied);
+            return Ok(message);
         }
         let mut builder = tempfile::Builder::new();
         builder.prefix("editor-update-");
@@ -460,6 +510,45 @@ mod tests {
             draft: false,
             prerelease: false,
             assets,
+        }
+    }
+
+    #[test]
+    fn discovers_canonical_packages_alongside_legacy_assets() {
+        let mut r = release();
+        for (index, (format, canonical, legacy)) in [
+            (
+                Format::Windows,
+                "editor-1.10.0-Setup.exe",
+                "Editor-V1.10.0-Setup.exe",
+            ),
+            (Format::Deb, "editor-1.10.0.deb", "Editor-V1.10.0.deb"),
+            (
+                Format::Rpm,
+                "editor-1.10.0-1.x86_64.rpm",
+                "editor-text-1.10.0-1.x86_64.rpm",
+            ),
+            (
+                Format::TarUser,
+                "editor-1.10.0.tar.gz",
+                "Editor-V1.10.0.tar.gz",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(format.filename("1.10.0"), canonical);
+            let legacy_asset = Asset {
+                name: legacy.into(),
+                state: "uploaded".into(),
+                size: 7,
+                digest: r.assets[index].digest.clone(),
+                browser_download_url: format!("{DOWNLOADS}/{}/{legacy}", r.tag_name),
+            };
+            r.assets.push(legacy_asset);
+            assert_eq!(package(&r, format, "1.10.0").unwrap().0.name, canonical);
+            r.assets[index].state = "new".into();
+            assert!(package(&r, format, "1.10.0").is_err());
         }
     }
 

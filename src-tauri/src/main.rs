@@ -120,8 +120,9 @@ fn queue(session: &Session, cwd: &Path, args: impl Iterator<Item = PathBuf>) -> 
         return Ok(false);
     }
     let mut files = lock(&session.files)?;
+    let mut args = args.peekable();
+    args.next_if(|arg| arg.as_os_str() == "--");
     let batch = args
-        .filter(|p| p.as_os_str() != "--")
         .map(|arg| {
             let path = cwd.join(arg);
             // Preserve inaccessible paths so the user sees the open error in this window.
@@ -542,6 +543,7 @@ fn main() {
             load_settings,
             save_settings,
             take_launches,
+            updates::pending_package_migration,
             updates::update_editor,
             choose_open,
             choose_save,

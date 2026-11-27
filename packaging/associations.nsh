@@ -2,10 +2,33 @@
 !macro NSIS_HOOK_POSTINSTALL
   WriteRegStr HKCU "Software\Classes\Editor.TextDocument" "" "Text document"
   WriteRegStr HKCU "Software\Classes\Editor.TextDocument\DefaultIcon" "" '"$INSTDIR\editor.exe",0'
-  WriteRegStr HKCU "Software\Classes\Editor.TextDocument\shell\open\command" "" '"$INSTDIR\editor.exe" "%1"'
+  WriteRegStr HKCU "Software\Classes\Editor.TextDocument\shell\open\command" "" '"$INSTDIR\editor.exe" -- "%1"'
+  WriteRegStr HKCU "Software\Classes\Editor.TextDocument\Application" "ApplicationName" "Editor"
+  WriteRegStr HKCU "Software\Classes\Applications\editor.exe" "FriendlyAppName" "Editor"
+  WriteRegStr HKCU "Software\Classes\Applications\editor.exe\DefaultIcon" "" '"$INSTDIR\editor.exe",0'
+  WriteRegStr HKCU "Software\Classes\Applications\editor.exe\shell\open\command" "" '"$INSTDIR\editor.exe" -- "%1"'
+  WriteRegStr HKCU "Software\Classes\*\shell\Editor.Open" "" "Open with Editor"
+  WriteRegStr HKCU "Software\Classes\*\shell\Editor.Open" "Icon" '"$INSTDIR\editor.exe",0'
+  WriteRegStr HKCU "Software\Classes\*\shell\Editor.Open\command" "" '"$INSTDIR\editor.exe" -- "%1"'
   WriteRegStr HKCU "Software\Editor\Capabilities" "ApplicationName" "Editor"
+  WriteRegStr HKCU "Software\Editor\Capabilities" "ApplicationIcon" '"$INSTDIR\editor.exe",0'
   WriteRegStr HKCU "Software\Editor\Capabilities" "ApplicationDescription" "Text and source-code editor"
   WriteRegStr HKCU "Software\RegisteredApplications" "Editor" "Software\Editor\Capabilities"
+  WriteRegStr HKCU "Software\Classes\Editor.EmptyDocument" "" "Empty Document"
+  WriteRegStr HKCU "Software\Classes\Editor.EmptyDocument\DefaultIcon" "" '"$INSTDIR\editor.exe",0'
+  WriteRegStr HKCU "Software\Classes\Editor.EmptyDocument\shell\open\command" "" '"$INSTDIR\editor.exe" -- "%1"'
+  WriteRegStr HKCU "Software\Classes\Editor.EmptyDocument\Application" "ApplicationName" "Editor"
+  WriteRegStr HKCU "Software\Classes\.editordoc\ShellNew" "NullFile" ""
+  WriteRegStr HKCU "Software\Classes\.editordoc\OpenWithProgids" "Editor.EmptyDocument" ""
+  WriteRegStr HKCU "Software\Editor\Capabilities\FileAssociations" ".editordoc" "Editor.EmptyDocument"
+  ReadRegStr $R0 HKCR ".editordoc" ""
+  ${If} $R0 == ""
+    WriteRegStr HKCU "Software\Classes\.editordoc" "" "Editor.EmptyDocument"
+  ${EndIf}
+  ReadRegStr $R0 HKCR "." ""
+  ${If} $R0 == ""
+    WriteRegStr HKCU "Software\Classes\." "" "Editor.TextDocument"
+  ${EndIf}
   WriteRegStr HKCU "Software\Classes\.txt\OpenWithProgids" "Editor.TextDocument" ""
   WriteRegStr HKCU "Software\Editor\Capabilities\FileAssociations" ".txt" "Editor.TextDocument"
   WriteRegStr HKCU "Software\Classes\.text\OpenWithProgids" "Editor.TextDocument" ""
@@ -134,6 +157,8 @@
   WriteRegStr HKCU "Software\Editor\Capabilities\FileAssociations" ".properties" "Editor.TextDocument"
   WriteRegStr HKCU "Software\Classes\.env\OpenWithProgids" "Editor.TextDocument" ""
   WriteRegStr HKCU "Software\Editor\Capabilities\FileAssociations" ".env" "Editor.TextDocument"
+  WriteRegStr HKCU "Software\Classes\.\OpenWithProgids" "Editor.TextDocument" ""
+  WriteRegStr HKCU "Software\Editor\Capabilities\FileAssociations" "." "Editor.TextDocument"
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 !macroend
 
@@ -202,8 +227,31 @@
   DeleteRegValue HKCU "Software\Classes\.gitattributes\OpenWithProgids" "Editor.TextDocument"
   DeleteRegValue HKCU "Software\Classes\.properties\OpenWithProgids" "Editor.TextDocument"
   DeleteRegValue HKCU "Software\Classes\.env\OpenWithProgids" "Editor.TextDocument"
+  DeleteRegValue HKCU "Software\Classes\.\OpenWithProgids" "Editor.TextDocument"
+  DeleteRegValue HKCU "Software\Classes\.editordoc\ShellNew" "NullFile"
+  DeleteRegKey /ifempty HKCU "Software\Classes\.editordoc\ShellNew"
+  DeleteRegValue HKCU "Software\Classes\.editordoc\OpenWithProgids" "Editor.EmptyDocument"
+  DeleteRegKey /ifempty HKCU "Software\Classes\.editordoc\OpenWithProgids"
+  ReadRegStr $R0 HKCU "Software\Classes\.editordoc" ""
+  ${If} $R0 == "Editor.EmptyDocument"
+    DeleteRegValue HKCU "Software\Classes\.editordoc" ""
+  ${EndIf}
+  DeleteRegKey /ifempty HKCU "Software\Classes\.editordoc"
+  ReadRegStr $R0 HKCU "Software\Classes\." ""
+  ${If} $R0 == "Editor.TextDocument"
+    DeleteRegValue HKCU "Software\Classes\." ""
+  ${EndIf}
+  DeleteRegKey /ifempty HKCU "Software\Classes\."
   DeleteRegKey HKCU "Software\Classes\Editor.TextDocument"
   DeleteRegKey HKCU "Software\Editor\Capabilities"
+  DeleteRegKey HKCU "Software\Classes\*\shell\Editor.Open"
+  DeleteRegKey HKCU "Software\Classes\Editor.EmptyDocument"
+  DeleteRegValue HKCU "Software\Classes\Applications\editor.exe" "FriendlyAppName"
+  DeleteRegKey HKCU "Software\Classes\Applications\editor.exe\DefaultIcon"
+  DeleteRegKey HKCU "Software\Classes\Applications\editor.exe\shell\open\command"
+  DeleteRegKey /ifempty HKCU "Software\Classes\Applications\editor.exe\shell\open"
+  DeleteRegKey /ifempty HKCU "Software\Classes\Applications\editor.exe\shell"
+  DeleteRegKey /ifempty HKCU "Software\Classes\Applications\editor.exe"
   DeleteRegKey /ifempty HKCU "Software\Editor"
   DeleteRegValue HKCU "Software\RegisteredApplications" "Editor"
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'

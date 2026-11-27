@@ -56,8 +56,8 @@ def main():
     p.add_argument('output', type=Path)
     args = p.parse_args()
     version = json.loads((ROOT / 'package.json').read_text())['version']
-    name = f'Editor-{version}-linux-x64-portable'
-    dest = args.output.resolve() / 'portable'
+    name = f'editor-{version}-Linux-Portable'
+    dest = args.output.resolve() / 'Portable/Linux'
     dest.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=dest) as directory:
         tmp = Path(directory)

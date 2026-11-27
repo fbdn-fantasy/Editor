@@ -61,7 +61,7 @@ async function launchBinary(backend, favorite) {
                 .find(w => w.get_pid() === Number(helper.get_identifier())), 'file chooser on same desktop');
             chooser.activate(global.get_current_time());
             await waitFor(() => chooser.has_focus(), 'focus outside Editor');
-            const opener = launcher.spawnv(['gio', 'launch', GLib.getenv('DOCK_DESKTOP'), document]);
+            const opener = launcher.spawnv(['gio', 'open', document]);
             await opener.wait_check_async(null);
             await waitFor(() => window.get_title()?.startsWith(GLib.path_get_basename(document)), 'document in original window');
             checkWindow(window, favorite);
@@ -114,6 +114,14 @@ export async function run() {
         const favorite = Favorites.getAppFavorites().getFavoriteMap()[desktopId];
         requireMatch(favorite?.get_app_info()?.get_filename() === GLib.getenv('DOCK_DESKTOP'),
             'Private favorite did not resolve to packaged desktop file');
+        const file = Gio.File.new_for_path(GLib.getenv('DOCK_DOCUMENT'));
+        const info = file.query_info('standard::content-type', Gio.FileQueryInfoFlags.NONE, null);
+        const mime = info.get_content_type();
+        requireMatch(Gio.AppInfo.get_recommended_for_type(mime).some(app => app.get_id() === desktopId),
+            'Editor is missing from Open With for ' + mime);
+        requireMatch(Gio.AppInfo.get_default_for_type(mime, false)?.get_id() === desktopId,
+            'Installed Editor is not the default for ' + mime);
+        print('PASS Editor is the default and appears in Open With for a zero-byte extensionless file (' + mime + ')');
         for (const backend of ['wayland', 'x11']) await launchBinary(backend, favorite);
         favorite.activate();
         const window = await waitFor(() => editorWindows()[0], 'window opened from favorite');

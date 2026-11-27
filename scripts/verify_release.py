@@ -20,13 +20,13 @@ import zlib
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '1.0.3'
+VERSION = json.loads((ROOT / 'package.json').read_text())['version']
 APP = 'app.editor.TextEditor'
 ARTIFACTS = {
-    'RPM': f'Linux/RPM/editor-text-{VERSION}-1.x86_64.rpm',
-    'DEB': f'Linux/DEB/Editor-V{VERSION}.deb',
-    'TAR': f'Linux/TAR/Editor-V{VERSION}.tar.gz',
-    'Windows': f'Windows/Editor-V{VERSION}-Setup.exe',
+    'RPM': f'Linux/RPM/editor-{VERSION}-1.x86_64.rpm',
+    'DEB': f'Linux/DEB/editor-{VERSION}.deb',
+    'TAR': f'Linux/TAR/editor-{VERSION}.tar.gz',
+    'Windows': f'Windows/editor-{VERSION}-Setup.exe',
 }
 SIZES = (16, 24, 32, 48, 64, 96, 128, 256, 512)
 SOURCE = ROOT / 'src-tauri'
@@ -154,11 +154,20 @@ def tar_entries(stream, prefix=''):
 
 
 def linux_files(files, temp, package_format):
-    require(files['usr/share/editor-text/install-format'].content == (package_format + "\n").encode(),
+    require(files['usr/share/editor/install-format'].content == (package_format + "\n").encode(),
             'wrong installed update format')
     for name, entry in files.items():
         privacy_scan(name, entry.content)
-    executable = files['usr/bin/editor-text']
+    for helper in ('desktop-setup', 'setup-active-desktops'):
+        entry = files[f'usr/libexec/editor/{helper}']
+        source = (ROOT / f'packaging/{helper}.sh').read_bytes()
+        # Fedora's brp-mangle-shebangs canonicalizes /bin/sh on merged-/usr systems.
+        variants = (source, source.replace(b'#!/bin/sh\n', b'#!/usr/bin/sh\n', 1)) if package_format == 'rpm' else (source,)
+        require(entry.mode & 0o111 and entry.content in variants,
+                f'incorrect installed {helper} helper')
+    require(files[f'etc/xdg/autostart/{APP}-setup.desktop'].content ==
+            (ROOT/'packaging/desktop-setup.desktop').read_bytes(), 'missing new-user desktop registration')
+    executable = files['usr/libexec/editor/editor']
     require(executable.mode & 0o111 == 0o111 and not executable.mode & 0o6000, 'invalid executable permissions')
     binary = temp / 'linux-editor'
     binary.write_bytes(executable.content)
@@ -172,14 +181,14 @@ def linux_files(files, temp, package_format):
     desktop.read_string(files[f'usr/share/applications/{APP}.desktop'].content.decode())
     group = desktop['Desktop Entry']
     require(group['Name'] == 'Editor' and group['Type'] == 'Application' and group['Icon'] == APP
-            and group['Exec'] == 'editor-text %F' and group.getboolean('Terminal') is False
+            and group['Exec'] == '/usr/libexec/editor/editor %F' and group.getboolean('Terminal') is False
             and group.get('StartupWMClass') == 'App.editor.TextEditor',
             'desktop launcher metadata mismatch')
-    require({'text/plain', 'text/markdown','application/json'}.issubset(group['MimeType'].split(';')),
+    require({'text/plain', 'text/markdown','application/json','application/x-zerosize','inode/x-empty'}.issubset(group['MimeType'].split(';')),
             'desktop MIME registration missing')
-    require(files['usr/share/doc/editor-text/LICENSE'].content == LICENCE, 'Linux license mismatch')
-    require(files['usr/share/doc/editor-text/NOTICE'].content == (ROOT/'NOTICE').read_bytes(), 'Linux notice mismatch')
-    require(files['usr/share/doc/editor-text/THIRD-PARTY-NOTICES.txt'].content ==
+    require(files['usr/share/doc/editor/LICENSE'].content == LICENCE, 'Linux license mismatch')
+    require(files['usr/share/doc/editor/NOTICE'].content == (ROOT/'NOTICE').read_bytes(), 'Linux notice mismatch')
+    require(files['usr/share/doc/editor/THIRD-PARTY-NOTICES.txt'].content ==
             (ROOT/'THIRD-PARTY-NOTICES.txt').read_bytes(), 'Linux third-party notices mismatch')
     for size in SIZES:
         png = f'{size}x{size}.png'
@@ -188,10 +197,10 @@ def linux_files(files, temp, package_format):
     return floor
 
 
-def rpm(path, temp):
+def rpm(path, temp, canonical=None):
     run('rpm','--checksig','--nosignature',path)
     name, version, arch, license_id = run('rpm','-qp','--qf','%{NAME}\n%{VERSION}\n%{ARCH}\n%{LICENSE}',path).decode().splitlines()
-    require(name == 'editor-text' and ' ' not in name and (version,arch,license_id) == (VERSION,'x86_64','AGPL-3.0-only'),
+    require(name == ('editor-text' if canonical else 'editor') and ' ' not in name and (version,arch,license_id) == (VERSION,'x86_64','AGPL-3.0-only'),
             'RPM metadata mismatch')
     deps = run('rpm','-qpR',path).decode()
     require('webkit2gtk4.1' in deps and 'gtk3' in deps, 'RPM runtime requirements missing')
@@ -206,10 +215,14 @@ def rpm(path, temp):
         name = safe_path(raw)
         if stat.S_ISREG(modes.get(name,0)):
             files[name] = Entry(run('cpio','-i','--to-stdout','--quiet',raw,data=payload),modes[name])
+    if canonical:
+        verify_embedded(files, canonical, 'rpm')
+    else:
+        require('editor-text' in run('rpm','-qp','--obsoletes',path).decode(), 'missing old RPM replacement')
     return linux_files(files,temp,'rpm')
 
 
-def deb(path, temp):
+def deb(path, temp, canonical=None):
     names = run('ar','t',path).decode().splitlines()
     require(names == ['debian-binary','control.tar.gz','data.tar.gz'] and
             run('ar','p',path,'debian-binary') == b'2.0\n', 'unexpected Debian ar format')
@@ -221,8 +234,12 @@ def deb(path, temp):
         require(all(not entry.pax_headers for entry in archive), 'dpkg-incompatible PAX headers')
     files = tar_entries(io.BytesIO(payload))
     fields = dict(line.split(': ',1) for line in meta['control'].content.decode().splitlines() if ': ' in line and not line.startswith(' '))
-    require((fields['Package'],fields['Version'],fields['Architecture']) == ('editor-text',VERSION,'amd64'),
+    require((fields['Package'],fields['Version'],fields['Architecture']) == (('editor-text' if canonical else 'editor'),VERSION,'amd64'),
             'DEB control identity mismatch')
+    if canonical:
+        verify_embedded(files, canonical, 'deb')
+    else:
+        require(all('editor-text' in fields[key] for key in ('Conflicts','Replaces')), 'missing old DEB replacement')
     floor = linux_files(files,temp,'deb')
     deps = fields['Depends']
     minimum = re.search(r'libc6 \(>= ([\d.]+)\)',deps)
@@ -233,6 +250,14 @@ def deb(path, temp):
     for name, entry in files.items():
         require(hashlib.md5(entry.content).hexdigest() == checks[name], f'Debian content digest mismatch for {name}')
     return floor
+
+
+def verify_embedded(files, canonical, extension):
+    base = 'usr/share/editor/legacy-update/editor'
+    data = files[f'{base}.{extension}'].content
+    require(data == canonical.read_bytes(), 'update contains a different canonical package')
+    require(files[base + '.sha256'].content.decode().strip() == hashlib.sha256(data).hexdigest(),
+            'embedded package digest mismatch')
 
 
 def tar_package(path, temp):
@@ -345,21 +370,26 @@ def verify(root, linux_only=False, with_portable=False):
     require(root.is_dir() and not root.is_symlink(),'release directory missing or linked')
     artifacts = {kind: name for kind, name in ARTIFACTS.items() if not linux_only or kind != 'Windows'}
     expected = {Path(name) for name in artifacts.values()}
-    archives = {kind: Path(filename).parent / f'Editor-V{VERSION}-{kind}-Source.zip'
+    archives = {kind: Path(filename).parent / f'editor-{VERSION}-{kind}-Source.zip'
                 for kind,filename in artifacts.items()}
     expected.update(archives.values())
+    legacy_names = {'RPM': f'editor-text-{VERSION}-1.x86_64.rpm', 'DEB': f'Editor-V{VERSION}.deb',
+                    'TAR': f'Editor-V{VERSION}.tar.gz', 'Windows': f'Editor-V{VERSION}-Setup.exe'}
+    legacy = {kind: Path(path).with_name(legacy_names[kind]) for kind, path in artifacts.items()}
+    expected.update(legacy.values())
     portables = {}
     if with_portable:
         platforms = ['linux'] if linux_only else ['linux', 'windows']
-        portables = {name: Path(f'portable/Editor-{VERSION}-{name}-x64-portable.zip') for name in platforms}
+        portables = {name: Path(f'Portable/{name.title()}/editor-{VERSION}-{name.title()}-Portable.zip') for name in platforms}
         expected.update(portables.values())
+        expected.update(path.with_stem(path.stem + '-Source') for path in portables.values())
     expected_dirs = {p for file in expected for p in file.parents if p != Path('.')}
     if linux_only:
         linux = root / 'Linux'
         require(linux.is_dir() and not linux.is_symlink(), 'Linux release directory missing or linked')
         contents = [linux, *linux.rglob('*')]
         if portables:
-            contents += [root/'portable', *(root/p for p in portables.values())]
+            contents += [root/'Portable', root/'Portable/Linux', *(root/'Portable/Linux').rglob('*')]
     else:
         contents = list(root.rglob('*'))
     require(all(not p.is_symlink() and (p.is_file() or p.is_dir()) for p in contents),'linked or special release entry')
@@ -379,7 +409,15 @@ def verify(root, linux_only=False, with_portable=False):
             else:
                 floor = {'RPM':rpm,'DEB':deb,'TAR':tar_package}[kind](root/name,temp)
                 print(f'PASS {name} (x86-64 ELF, glibc {".".join(map(str,floor))} or later)',flush=True)
+        for kind, name in legacy.items():
+            canonical = root / artifacts[kind]
+            if kind in ('Windows', 'TAR'):
+                require((root / name).read_bytes() == canonical.read_bytes(), 'legacy filename payload differs')
+            else:
+                {'RPM': rpm, 'DEB': deb}[kind](root / name, temp, canonical)
+            print(f'PASS V1.0.3 update asset {name}', flush=True)
         for platform, path in portables.items():
+            source_archive(root/path.with_stem(path.stem + '-Source'), platform)
             portable(root/path, platform, temp)
             print(f'PASS {path}',flush=True)
 

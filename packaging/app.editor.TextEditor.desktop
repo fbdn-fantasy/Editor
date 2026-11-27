@@ -3,15 +3,15 @@ Version=1.0
 Type=Application
 Name=Editor
 GenericName=Text Editor
-Exec=editor-text %F
+Exec=/usr/libexec/editor/editor %F
 Icon=app.editor.TextEditor
 Actions=new-window;
 Terminal=false
 StartupNotify=true
 StartupWMClass=App.editor.TextEditor
 Categories=Utility;TextEditor;
-MimeType=text/plain;text/markdown;text/csv;text/tab-separated-values;text/html;text/css;text/javascript;application/javascript;application/typescript;application/json;application/ld+json;application/xml;text/xml;application/yaml;text/yaml;application/toml;application/sql;application/x-shellscript;application/x-php;text/x-python;text/x-python3;text/x-rust;text/rust;text/x-c;text/x-csrc;text/x-chdr;text/x-c++src;text/x-c++hdr;text/x-csharp;text/x-java;text/x-kotlin;text/x-go;text/x-ruby;text/x-swift;text/x-lua;text/x-rsrc;text/x-makefile;text/x-dockerfile;text/x-ini;text/x-scss;application/x-powershell;application/vnd.dart;application/x-ruby;application/x-perl;text/x-log;application/x-yaml;text/x-patch;text/x-diff;application/x-zerosize;
+MimeType=text/plain;text/markdown;text/csv;text/tab-separated-values;text/html;text/css;text/javascript;application/javascript;application/typescript;application/json;application/ld+json;application/xml;text/xml;application/yaml;text/yaml;application/toml;application/sql;application/x-shellscript;application/x-php;text/x-python;text/x-python3;text/x-rust;text/rust;text/x-c;text/x-csrc;text/x-chdr;text/x-c++src;text/x-c++hdr;text/x-csharp;text/x-java;text/x-kotlin;text/x-go;text/x-ruby;text/x-swift;text/x-lua;text/x-rsrc;text/x-makefile;text/x-dockerfile;text/x-ini;text/x-scss;application/x-powershell;application/vnd.dart;application/x-ruby;application/x-perl;text/x-log;application/x-yaml;text/x-patch;text/x-diff;application/x-zerosize;inode/x-empty;
 
 [Desktop Action new-window]
 Name=New Document
-Exec=editor-text
+Exec=/usr/libexec/editor/editor

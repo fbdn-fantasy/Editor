@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the installed Linux application on an isolated display and D-Bus session.
 
-Run with xvfb-run -a dbus-run-session -- python3 tests/desktop.py /usr/bin/editor-text.
+Run with xvfb-run -a dbus-run-session -- python3 tests/desktop.py /usr/libexec/editor/editor.
 Requires WebKitWebDriver, xdotool, xclip and an available loopback socket on a private X11 display.
 """
 import argparse
@@ -111,16 +111,23 @@ class Driver:
         eventually(lambda: self.js("return (" + expr + ")"), label)
 
 
-def choose_save_path(driver, target):
+def choose_path(driver, target, save=False):
     dialog = subprocess.check_output(
-        ["xdotool", "search", "--sync", "--onlyvisible", "--name", "^Save As"],
+        ["xdotool", "search", "--sync", "--onlyvisible", "--name", "^Save As" if save else "^Open$"],
         text=True, timeout=12, env=driver.environment).splitlines()[-1]
     def xkey(*arguments):
         subprocess.run(["xdotool", *arguments], check=True, timeout=5, env=driver.environment)
     xkey("windowfocus", "--sync", dialog)
-    xkey("key", "ctrl+a")
+    xkey("key", "ctrl+a" if save else "ctrl+l")
     xkey("type", str(target))
     xkey("key", "Return")
+    if not save:
+        # GTK can consume the first Return while completing the typed pathname.
+        # Activate Open only while its own file chooser still holds the focus.
+        time.sleep(0.5)
+        if subprocess.run(["xdotool", "getwindowfocus", "getwindowname"], capture_output=True,
+                          text=True, env=driver.environment).stdout.strip() == "Open":
+            xkey("key", "alt+o")
 
 
 def save_as_mixed(driver, temp):
@@ -131,7 +138,7 @@ def save_as_mixed(driver, temp):
     driver.start([source])
     driver.wait("document.querySelector('[role=tab][aria-selected=true]')?.textContent.trim() === 'mixed.txt'", "mixed-line-ending file")
     driver.key("\ue009", "\ue008", "s")
-    choose_save_path(driver, copy)
+    choose_path(driver, copy, save=True)
     eventually(copy.is_file, "Save As copy")
     assert copy.read_bytes() == contents, "Save As changed the source line endings"
     assert source.read_bytes() == contents
@@ -172,13 +179,24 @@ def run(driver, temp, capture=None):
     driver.wait("document.querySelectorAll('[role=tab]').length === 2", "new blank tab")
     driver.key(ctrl, 's')
     blank = temp / "empty notes"
-    choose_save_path(driver, blank)
+    choose_path(driver, blank, save=True)
     eventually(lambda: blank.is_file() and blank.read_bytes() == b"", "zero-byte extensionless file")
     driver.wait("document.querySelector('[role=tab][aria-selected=true]').textContent.trim() === 'empty notes'", "saved tab name")
     driver.key(ctrl, 'w')
     driver.wait("document.querySelectorAll('[role=tab]').length === 1", "close saved blank")
     driver.wait("document.activeElement.matches('.cm-content')", "focus after closing the saved tab")
-    print("PASS Save creates a zero-byte document with the exact extensionless name", flush=True)
+    driver.key(ctrl, 'o')
+    choose_path(driver, blank)
+    driver.wait("document.querySelector('[role=tab][aria-selected=true]').textContent.trim() === 'empty notes'", "Open dialog selects the empty extensionless file")
+    assert driver.text(".cm-content") == ""
+    driver.insert("first edit")
+    eventually(lambda: blank.read_bytes() == b"first edit", "edit in the reopened empty document")
+    driver.key(ctrl, "a")
+    driver.key("\ue003")
+    eventually(lambda: blank.read_bytes() == b"", "delete all text back to zero bytes")
+    driver.key(ctrl, "w")
+    driver.wait("document.querySelector('[role=tab][aria-selected=true]')?.textContent.startsWith('Untitled')", "fresh tab after closing empty file")
+    print("PASS Save, Open, edit and clear a real zero-byte extensionless document", flush=True)
     driver.insert("def example():\n    return 'é😀'")
     driver.wait("document.querySelector('.status-language').textContent === 'Python'", "unsaved language detection")
     assert "30 characters" in driver.text(".count"), driver.text(".count")

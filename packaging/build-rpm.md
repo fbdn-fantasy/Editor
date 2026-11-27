@@ -15,6 +15,6 @@ cargo build --manifest-path src-tauri/Cargo.toml --release --locked --features c
 python3 scripts/package_linux.py rpm src-tauri/target/release/editor ./release
 ```
 
-The result is written under release/Linux/RPM/. If CARGO_TARGET_DIR is set, supply the appropriate release/editor path. Packaging does not change system defaults. The executable is installed as editor-text to coexist with the system's editor command.
+The result is written under release/Linux/RPM/. If CARGO_TARGET_DIR is set, supply the appropriate release/editor path. Installation sets Editor as the default for extensionless empty documents on first desktop setup and adds an Empty Document template. The desktop launcher uses the private executable in libexec/editor/editor.
 
-Install using dnf install ./release/Linux/RPM/*.rpm. The package declares its runtime libraries and installs an XDG desktop entry and icon resources.
+Install using `dnf install ./release/Linux/RPM/editor-1.0.4-1.x86_64.rpm`. DNF replaces earlier Editor and editor-text packages in the same transaction. The package installs an XDG desktop entry and icon resources.

@@ -8,7 +8,8 @@ Settings, recovery records and the webview profile travel in the Data folder
 beside Editor.AppImage. Close Editor before moving the folder or unplugging
 the drive. Keep Data when upgrading.
 
-For a dock icon and an entry in the application menu, run
+For an application-menu entry, a dock icon, and an Open With option for
+plain text and empty documents, run
 sh register-launcher.sh in the extracted folder, then pin Editor Portable.
 Run the script again if you move the folder. To remove the shortcut, run
 sh register-launcher.sh --remove.

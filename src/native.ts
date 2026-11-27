@@ -20,6 +20,7 @@ export interface Recovery {
 }
 export type Target = { path: string; version: string | null }
 export const native = {
+  pendingPackageMigration: () => invoke<boolean>('pending_package_migration'),
   update: (progress: (phase: string) => void) => {
     const channel = new Channel<string>()
     channel.onmessage = progress

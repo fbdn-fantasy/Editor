@@ -205,6 +205,10 @@
           if (queuedPaths) pathsArrived()
           focus()
           poll = setInterval(() => void workspace.poll(), 1700)
+          if (await native.pendingPackageMigration()) {
+            const choice = await ask('Finish updating Editor', 'Editor is ready to replace the old editor-text package. Finish now, or choose Help → Check for Updates later.', ['Later', 'Finish update'])
+            if (choice === 'Finish update') await updateEditor()
+          }
         }
       }
     }

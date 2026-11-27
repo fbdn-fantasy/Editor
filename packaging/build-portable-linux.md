@@ -21,6 +21,6 @@ python3 scripts/package_linux_portable.py "$CARGO_TARGET_DIR/release/bundle/appi
 ```
 
 The last step sets the portable desktop entry and icon, adds the launcher and
-shortcut helper, and writes the ZIP to release/portable. The type 2 runtime
+shortcut helper, and writes the ZIP to release/Portable/Linux. The type 2 runtime
 used for 1.0.1 has SHA-256
 `617aa77314d57c8b8e4fae9c3f0b35af7b30d5529cb69e98f64f92510ed98a46`.

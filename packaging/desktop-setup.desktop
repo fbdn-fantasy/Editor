@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Editor desktop setup
+Exec=/usr/libexec/editor/desktop-setup
+NoDisplay=true
+Terminal=false

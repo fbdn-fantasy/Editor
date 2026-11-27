@@ -14,8 +14,8 @@ def main():
     parser.add_argument("output", type=Path, help="release directory")
     args = parser.parse_args()
     version = json.loads((ROOT / "package.json").read_text())["version"]
-    name = f"Editor-{version}-windows-x64-portable"
-    dest = args.output / "portable"
+    name = f"editor-{version}-Windows-Portable"
+    dest = args.output / "Portable/Windows"
     dest.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(dir=dest) as staging:
         output = Path(staging) / f"{name}.zip"

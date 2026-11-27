@@ -1,6 +1,6 @@
 [package]
 name = "editor"
-version = "1.0.3"
+version = "1.0.4"
 edition = "2024"
 license = "AGPL-3.0-only"
 description = "Desktop text and source-code editor"

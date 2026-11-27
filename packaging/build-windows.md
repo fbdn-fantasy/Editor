@@ -12,7 +12,7 @@ npm test
 npm run tauri build -- --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
 ```
 
-The resulting installer is src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/Editor_1.0.3_x64-setup.exe unless CARGO_TARGET_DIR overrides the output location. Distribute it as Editor-V1.0.3-Setup.exe. The installer uses a per-user installation and registers Open With and default-app capabilities. It installs the WebView2 Evergreen runtime via Microsoft's bootstrapper when the runtime is missing. That prerequisite step requires a network connection. Installed editing works offline.
+The resulting installer is src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/Editor_1.0.4_x64-setup.exe unless CARGO_TARGET_DIR overrides the output location. Copy it to Windows/editor-1.0.4-Setup.exe and copy the same installer to Windows/Editor-V1.0.4-Setup.exe for V1.0.3 in-app updates. The installer uses a per-user installation and registers Open With and default-app capabilities. It installs the WebView2 Evergreen runtime via Microsoft's bootstrapper when the runtime is missing. That prerequisite step requires a network connection. Installed editing works offline.
 
 For the portable ZIP, run the following from the project directory after building the installer. Set the executable path to the output under CARGO_TARGET_DIR if you use a custom target directory.
 

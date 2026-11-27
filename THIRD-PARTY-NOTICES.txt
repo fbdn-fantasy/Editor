@@ -1,4 +1,4 @@
-Third-party software notices for Editor 1.0.3
+Third-party software notices for Editor 1.0.4
 
 The following notices accompany the bundled libraries. Libraries with identical license files are grouped together.
 

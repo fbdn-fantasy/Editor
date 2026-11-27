@@ -18,13 +18,25 @@ printf '%s  %s\n' "$3" "$file" | sha256sum --check --status
 umask 022
 case "$1" in
     deb)
-        test "$(dpkg-deb -f "$file" Package)" = editor-text
+        test "$(dpkg-deb -f "$file" Package)" = editor
         test "$(dpkg-deb -f "$file" Architecture)" = amd64
         test "$(dpkg-deb -f "$file" Version)" = "$4"
-        apt-get -y --no-remove install "$work/$file" ;;
+        if [ -f /usr/share/editor/legacy-update/editor.deb ]; then
+            # The canonical package Conflicts/Replaces the old identity. dpkg
+            # performs this one local replacement using installed dependencies.
+            dpkg --install "$work/$file"
+        else
+            apt-get -y --no-remove install "$work/$file"
+        fi ;;
     rpm)
-        test "$(rpm -qp --queryformat '%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}' "$file")" = "editor-text-$4-1.x86_64"
-        dnf -y install "$work/$file" ;;
+        test "$(rpm -qp --queryformat '%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}' "$file")" = "editor-$4-1.x86_64"
+        if [ -f /usr/share/editor/legacy-update/editor.rpm ]; then
+            # The transition package already has the same runtime dependencies.
+            mkdir "$work/empty-repos"
+            dnf --setopt="reposdir=$work/empty-repos" -y install "$work/$file"
+        else
+            dnf -y install "$work/$file"
+        fi ;;
     tar-user|tar-system)
         tar --extract --gzip --no-same-owner --no-same-permissions --file "$file"
         # The verified archive provides the same installer used by a fresh TAR installation.

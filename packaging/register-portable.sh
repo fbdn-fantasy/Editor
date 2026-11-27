@@ -3,8 +3,13 @@ set -eu
 root=$(dirname "$(readlink -f "$0")")
 apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 shortcut="$apps/app.editor.TextEditor.Portable.desktop"
+refresh() {
+    if [ -d "$apps" ] && command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$apps"
+    fi
+}
 case "${1:-}" in
-    --remove) rm -f -- "$shortcut"; exit 0 ;;
+    --remove) rm -f -- "$shortcut"; refresh; exit 0 ;;
     "") ;;
     *) echo "Usage: sh register-launcher.sh [--remove]" >&2; exit 2 ;;
 esac
@@ -28,7 +33,9 @@ Terminal=false
 StartupNotify=true
 StartupWMClass=App.editor.TextEditor.Portable
 Categories=Utility;TextEditor;
+MimeType=text/plain;application/x-zerosize;inode/x-empty;
 EOF
 chmod 644 "$temp"
 mv -f -- "$temp" "$shortcut"
+refresh
 printf 'Registered %s\n' "$shortcut"
